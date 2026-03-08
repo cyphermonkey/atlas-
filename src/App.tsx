@@ -1,3 +1,4 @@
+'use client';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Zap, AlertTriangle, Loader2, RefreshCw,
@@ -20,7 +21,9 @@ import {
   generateGrowthProjection,
   generateRevenueModel,
   generateInvestmentThesis,
+  runIdeaAgent,
 } from './lib/marketSizing';
+import type { AgentUpdate } from './lib/marketSizing';
 import type {
   MarketSizingInput,
   SizingStep,
@@ -70,40 +73,47 @@ function MetricCard({ label, sublabel, value, color, delay, run }: {
   const displayed = useCountUp(value, run);
   return (
     <div
-      className="card p-6 flex flex-col gap-3 relative overflow-hidden"
+      className="card relative overflow-hidden"
       style={{
-        animation: `fadeUp 0.5s ease-out ${delay}ms both`,
-        borderColor: `${color}22`,
+        animation: `fadeUp 0.55s cubic-bezier(0.22,1,0.36,1) ${delay}ms both`,
+        borderColor: `${color}18`,
+        padding: 0,
       }}
     >
-      {/* Background glow */}
+      {/* Top accent line */}
+      <div style={{ height: 2, background: `linear-gradient(90deg, ${color}, ${color}40, transparent)` }} />
+
+      {/* Corner glow */}
       <div
-        className="absolute -top-6 -right-6 w-28 h-28 rounded-full blur-2xl pointer-events-none"
-        style={{ background: `${color}12` }}
+        className="absolute -bottom-10 -right-10 w-40 h-40 rounded-full blur-3xl pointer-events-none"
+        style={{ background: `${color}09` }}
       />
 
-      <div className="flex items-center justify-between relative z-10">
-        <span className="label" style={{ color }}>{label}</span>
-        <span
-          className="tag"
-          style={{ color, background: `${color}12`, border: `1px solid ${color}22` }}
+      <div style={{ padding: '20px 22px 22px' }} className="relative z-10">
+        <div className="flex items-center justify-between mb-4">
+          <span className="label" style={{ color }}>{label}</span>
+          <span className="tag" style={{ color, background: `${color}10`, border: `1px solid ${color}20` }}>
+            {sublabel}
+          </span>
+        </div>
+
+        <div
+          className="font-bold leading-none"
+          style={{
+            fontFamily: 'var(--font-display)',
+            color: 'var(--fg-1)',
+            fontSize: 'clamp(1.75rem, 4vw, 2.75rem)',
+            fontWeight: 700,
+          }}
         >
-          {sublabel}
-        </span>
-      </div>
+          {formatCurrency(displayed)}
+        </div>
 
-      <div
-        className="text-4xl font-bold leading-none relative z-10"
-        style={{ fontFamily: 'var(--font-display)', color: 'var(--fg-1)' }}
-      >
-        {formatCurrency(displayed)}
+        <div
+          className="mt-4 h-px w-full"
+          style={{ background: `linear-gradient(90deg, ${color}55, transparent)` }}
+        />
       </div>
-
-      {/* Bar */}
-      <div
-        className="h-0.5 w-full rounded-full relative z-10"
-        style={{ background: `linear-gradient(90deg, ${color}80, transparent)` }}
-      />
     </div>
   );
 }
@@ -634,6 +644,12 @@ export default function App() {
   // Investment thesis
   const [thesis, setThesis] = useState<InvestmentThesis | null>(null);
   const [thesisLoading, setThesisLoading] = useState(false);
+  // Idea agent mode
+  const [ideaMode, setIdeaMode]       = useState(false);
+  const [ideaText, setIdeaText]       = useState('');
+  const [agentLogs, setAgentLogs]     = useState<AgentUpdate[]>([]);
+  const [agentRunning, setAgentRunning] = useState(false);
+
   // Unit economics (pure frontend, no loading)
   const [arpu, setArpu] = useState(50);
   const [churnPct, setChurnPct] = useState(2);
@@ -695,6 +711,33 @@ export default function App() {
     setPorters(null); setSwot(null); setSegments([]);
     setGrowth(null); setRevenueModel(null);
     setThesis(null);
+  }
+
+  async function runAgent() {
+    if (!ideaText.trim() || agentRunning) return;
+    setAgentRunning(true);
+    setAgentLogs([]);
+    setResult(null); setSteps([]); setWarnings({}); setError('');
+    setCompetitors([]); setScenarios([]);
+    setChatMessages([]); setChatInput('');
+    setPorters(null); setSwot(null); setSegments([]);
+    setGrowth(null); setRevenueModel(null); setThesis(null);
+    try {
+      const agentResult = await runIdeaAgent(ideaText, (update) => {
+        setAgentLogs(prev => [...prev, update]);
+      });
+      setInput(agentResult.input);
+      setResult(agentResult.result);
+      setSteps(agentResult.result.steps);
+      setComputed({ tam: agentResult.result.tam, sam: agentResult.result.sam, som: agentResult.result.som });
+      setCompetitors(agentResult.competitors);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Agent failed. Please try again.';
+      setError(msg);
+      setAgentLogs(prev => [...prev, { phase: 'error', message: msg }]);
+    } finally {
+      setAgentRunning(false);
+    }
   }
 
   async function loadCompetitors() {
@@ -871,31 +914,32 @@ Narrative: ${result.narrative}`;
 
       {/* ── Header ── */}
       <header
-        className="sticky top-0 z-30 px-4 sm:px-8 py-4 flex items-center justify-between"
+        className="sticky top-0 z-30 px-4 sm:px-8 py-3.5 flex items-center justify-between"
         style={{
-          background: 'rgba(6,10,18,0.85)',
-          backdropFilter: 'blur(12px)',
-          borderBottom: '1px solid var(--border)',
+          background: 'rgba(3,13,28,0.88)',
+          backdropFilter: 'blur(20px)',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          boxShadow: '0 1px 0 rgba(59,130,246,0.08)',
         }}
       >
         <div className="flex items-center gap-4">
           <AtlasLogo />
-          <div className="hidden sm:block h-4 w-px" style={{ background: 'var(--border)' }} />
-          <span className="hidden sm:inline text-xs" style={{ color: 'var(--fg-3)', fontFamily: 'var(--font-mono)' }}>
-            Market Intelligence Engine
+            <div className="hidden sm:block h-3.5 w-px" style={{ background: 'rgba(255,255,255,0.1)' }} />
+          <span className="hidden sm:inline" style={{ color: 'var(--fg-3)', fontFamily: 'var(--font-mono)', fontSize: '0.62rem', letterSpacing: '0.1em' }}>
+            MARKET INTELLIGENCE ENGINE
           </span>
         </div>
 
-        {/* Groq status indicator */}
+        {/* Status badge */}
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
-          style={{ background: 'var(--indigo-lo)', border: '1px solid var(--border-hi)' }}
+          style={{ background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.2)' }}
         >
           <div
             className="w-1.5 h-1.5 rounded-full"
-            style={{ background: 'var(--emerald)', boxShadow: '0 0 6px var(--emerald)' }}
+            style={{ background: 'var(--emerald)', boxShadow: '0 0 8px var(--emerald)', animation: 'pulse-glow 2s infinite' }}
           />
-          <span className="text-xs font-bold" style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-2)' }}>
-            Llama 3.3 · Groq
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.62rem', fontWeight: 700, color: 'rgba(16,185,129,0.9)', letterSpacing: '0.08em' }}>
+            LIVE · LLAMA 3.3
           </span>
         </div>
       </header>
@@ -904,103 +948,206 @@ Narrative: ${result.narrative}`;
 
         {/* ── Hero + form ── */}
         <div className="mb-10" style={{ animation: 'fadeUp 0.5s ease-out' }}>
-          <div className="label mb-2">Market Sizing</div>
+          <div className="label mb-3" style={{ color: 'var(--indigo)', letterSpacing: '0.18em' }}>Market Intelligence</div>
           <h1
-            className="text-3xl sm:text-5xl mb-3 leading-tight"
+            className="text-3xl sm:text-5xl mb-4 leading-tight"
             style={{ fontFamily: 'var(--font-display)', color: 'var(--fg-1)', fontWeight: 600 }}
           >
-            Size any market in<br />
-            <em style={{ fontStyle: 'italic', color: 'var(--indigo-hi)' }}>seconds.</em>
+            Size any market<br />
+            <em style={{ fontStyle: 'italic', color: 'var(--indigo-hi)' }}>in seconds.</em>
           </h1>
-          <p className="text-base mb-8" style={{ color: 'var(--fg-2)', maxWidth: 480 }}>
-            Claude acts as your McKinsey analyst — generating structured assumptions,
-            running the funnel math, and sanity-checking every edit in real time.
+          <p className="text-base mb-6" style={{ color: 'var(--fg-2)', maxWidth: 460, lineHeight: 1.7 }}>
+            {ideaMode
+              ? 'Describe your startup — the AI figures out what to search, thinks through the market, and builds the full report.'
+              : 'Enter your market details and the AI generates structured assumptions, runs the math, and sanity-checks every edit.'}
           </p>
 
-          {/* Form row */}
-          <div
-            className="card p-5"
-            style={{ maxWidth: 860 }}
-          >
-            <div className="grid gap-4 grid-cols-1 sm:grid-cols-[1fr_180px_120px]">
-              {/* Market */}
-              <div>
-                <label className="label mb-1.5 flex items-center gap-1.5">
-                  <Layers size={11} /> Market
-                </label>
-                <input
-                  className="input-field"
-                  placeholder="e.g. Indian EV market, US SaaS security…"
-                  value={input.market}
-                  onChange={e => setInput(p => ({ ...p, market: e.target.value }))}
-                  onKeyDown={e => e.key === 'Enter' && canRun && analyze()}
-                />
-              </div>
-
-              {/* Geography */}
-              <div>
-                <label className="label mb-1.5 flex items-center gap-1.5">
-                  <Globe size={11} /> Geography
-                </label>
-                <input
-                  className="input-field"
-                  placeholder="India, Global, US…"
-                  value={input.geography}
-                  onChange={e => setInput(p => ({ ...p, geography: e.target.value }))}
-                  onKeyDown={e => e.key === 'Enter' && canRun && analyze()}
-                />
-              </div>
-
-              {/* Year */}
-              <div>
-                <label className="label mb-1.5 flex items-center gap-1.5">
-                  <Calendar size={11} /> Year
-                </label>
-                <input
-                  type="number"
-                  className="input-field"
-                  style={{ fontFamily: 'var(--font-mono)' }}
-                  value={input.year}
-                  min={2020}
-                  max={2035}
-                  onChange={e => setInput(p => ({ ...p, year: parseInt(e.target.value) || p.year }))}
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between mt-4 gap-4 flex-wrap">
-              {/* Methodology */}
-              <div className="flex items-center gap-2">
-                <span className="label">Methodology:</span>
-                {(['top-down', 'bottom-up'] as Methodology[]).map(m => (
-                  <button
-                    key={m}
-                    onClick={() => setInput(p => ({ ...p, methodology: m }))}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all capitalize"
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      background: input.methodology === m ? 'var(--indigo-lo)' : 'transparent',
-                      border: `1px solid ${input.methodology === m ? 'var(--border-hi)' : 'var(--border)'}`,
-                      color: input.methodology === m ? 'var(--indigo-hi)' : 'var(--fg-3)',
-                    }}
-                  >
-                    {m === 'top-down' ? 'Top-Down' : 'Bottom-Up'}
-                  </button>
-                ))}
-              </div>
-
+          {/* Mode toggle */}
+          <div className="flex items-center gap-2 mb-4">
+            {[
+              { id: false, label: 'Manual Form', icon: <Layers size={11} /> },
+              { id: true,  label: 'AI Agent — just describe your idea', icon: <Zap size={11} /> },
+            ].map(({ id, label, icon }) => (
               <button
-                onClick={analyze}
-                disabled={!canRun}
-                className="btn-primary"
+                key={String(id)}
+                onClick={() => { setIdeaMode(id); setError(''); setAgentLogs([]); }}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5"
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  background: ideaMode === id ? 'var(--indigo-lo)' : 'transparent',
+                  border: `1px solid ${ideaMode === id ? 'var(--border-hi)' : 'var(--border)'}`,
+                  color: ideaMode === id ? 'var(--indigo-hi)' : 'var(--fg-3)',
+                }}
               >
-                {loading ? (
-                  <><Loader2 size={14} className="animate-spin" /> Generating{dots}</>
-                ) : (
-                  <><Zap size={14} /> Analyze Market</>
-                )}
+                {icon}{label}
               </button>
+            ))}
+          </div>
+
+          {/* Form card */}
+          <div className="card" style={{ maxWidth: 860, padding: 0, overflow: 'hidden' }}>
+            {/* Card chrome header */}
+            <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div className="w-2 h-2 rounded-full" style={{ background: 'var(--indigo)', boxShadow: '0 0 8px var(--indigo)', animation: 'pulse-glow 3s infinite' }} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.62rem', color: 'var(--fg-3)', letterSpacing: '0.1em' }}>
+                {ideaMode ? 'AI AGENT MODE — NATURAL LANGUAGE INPUT' : 'MANUAL MODE — STRUCTURED FORM INPUT'}
+              </span>
             </div>
+          <div style={{ padding: '20px' }}>
+
+            {ideaMode ? (
+              /* ── AI Agent mode ── */
+              <div className="flex flex-col gap-4">
+                <div>
+                  <label className="label mb-1.5 flex items-center gap-1.5">
+                    <MessageSquare size={11} /> Describe your startup or business idea
+                  </label>
+                  <textarea
+                    className="input-field"
+                    rows={4}
+                    placeholder={`e.g. "I'm building a B2B SaaS tool that helps CA firms automate GST filing for their SME clients in India. We charge ₹2,000/month per CA firm. Target market is the 1.5 lakh registered CAs."`}
+                    value={ideaText}
+                    onChange={e => setIdeaText(e.target.value)}
+                    style={{ resize: 'vertical', lineHeight: 1.6 }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <span className="text-xs" style={{ color: 'var(--fg-3)', fontFamily: 'var(--font-mono)' }}>
+                    The AI will search the web, reason through the market, and generate a full report.
+                  </span>
+                  <button
+                    onClick={runAgent}
+                    disabled={!ideaText.trim() || agentRunning}
+                    className="btn-primary"
+                  >
+                    {agentRunning
+                      ? <><Loader2 size={14} className="animate-spin" /> Researching{dots}</>
+                      : <><Zap size={14} /> Run Agent</>}
+                  </button>
+                </div>
+
+                {/* Agent terminal log */}
+                {agentLogs.length > 0 && (
+                  <div className="terminal">
+                    {/* Terminal chrome bar */}
+                    <div className="flex items-center gap-2 px-4 py-2.5" style={{ borderBottom: '1px solid rgba(59,130,246,0.12)', background: 'rgba(59,130,246,0.04)' }}>
+                      <div className="flex gap-1.5">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#F87171', opacity: 0.7 }} />
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#F59E0B', opacity: 0.7 }} />
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#10B981', opacity: 0.7 }} />
+                      </div>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', color: 'rgba(59,130,246,0.6)', letterSpacing: '0.1em', marginLeft: 6 }}>
+                        atlas-agent ~ market-research
+                      </span>
+                    </div>
+                    <div className="p-4 flex flex-col gap-1.5">
+                      {agentLogs.map((log, i) => {
+                        const isLast  = i === agentLogs.length - 1;
+                        const isDone  = log.phase === 'done';
+                        const isError = log.phase === 'error';
+                        const color   = isDone ? '#10B981' : isError ? '#F87171' : isLast && agentRunning ? '#F59E0B' : '#3B82F6';
+                        const prefix  = isDone ? '✓' : isError ? '✗' : isLast && agentRunning ? '▶' : '✓';
+                        return (
+                          <div key={i} className="flex flex-col gap-0.5">
+                            <div className="flex items-start gap-2">
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color, minWidth: 14, marginTop: 1, flexShrink: 0 }}>
+                                {prefix}
+                              </span>
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: isLast && agentRunning ? '#EEF6FF' : 'rgba(238,246,255,0.7)', fontWeight: isLast ? 600 : 400 }}>
+                                {log.message}
+                                {isLast && agentRunning && <span style={{ marginLeft: 2, animation: 'cursor-blink 0.9s step-end infinite' }}>▌</span>}
+                              </span>
+                            </div>
+                            {log.detail && (
+                              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'rgba(59,130,246,0.55)', paddingLeft: 22, lineHeight: 1.5 }}>
+                                {log.detail}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* ── Manual form mode ── */
+              <>
+                <div className="grid gap-4 grid-cols-1 sm:grid-cols-[1fr_180px_120px]">
+                  {/* Market */}
+                  <div>
+                    <label className="label mb-1.5 flex items-center gap-1.5">
+                      <Layers size={11} /> Market
+                    </label>
+                    <input
+                      className="input-field"
+                      placeholder="e.g. Indian EV market, US SaaS security…"
+                      value={input.market}
+                      onChange={e => setInput(p => ({ ...p, market: e.target.value }))}
+                      onKeyDown={e => e.key === 'Enter' && canRun && analyze()}
+                    />
+                  </div>
+
+                  {/* Geography */}
+                  <div>
+                    <label className="label mb-1.5 flex items-center gap-1.5">
+                      <Globe size={11} /> Geography
+                    </label>
+                    <input
+                      className="input-field"
+                      placeholder="India, Global, US…"
+                      value={input.geography}
+                      onChange={e => setInput(p => ({ ...p, geography: e.target.value }))}
+                      onKeyDown={e => e.key === 'Enter' && canRun && analyze()}
+                    />
+                  </div>
+
+                  {/* Year */}
+                  <div>
+                    <label className="label mb-1.5 flex items-center gap-1.5">
+                      <Calendar size={11} /> Year
+                    </label>
+                    <input
+                      type="number"
+                      className="input-field"
+                      style={{ fontFamily: 'var(--font-mono)' }}
+                      value={input.year}
+                      min={2020}
+                      max={2035}
+                      onChange={e => setInput(p => ({ ...p, year: parseInt(e.target.value) || p.year }))}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between mt-4 gap-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="label">Methodology:</span>
+                    {(['top-down', 'bottom-up'] as Methodology[]).map(m => (
+                      <button
+                        key={m}
+                        onClick={() => setInput(p => ({ ...p, methodology: m }))}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all capitalize"
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          background: input.methodology === m ? 'var(--indigo-lo)' : 'transparent',
+                          border: `1px solid ${input.methodology === m ? 'var(--border-hi)' : 'var(--border)'}`,
+                          color: input.methodology === m ? 'var(--indigo-hi)' : 'var(--fg-3)',
+                        }}
+                      >
+                        {m === 'top-down' ? 'Top-Down' : 'Bottom-Up'}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button onClick={analyze} disabled={!canRun} className="btn-primary">
+                    {loading
+                      ? <><Loader2 size={14} className="animate-spin" /> Generating{dots}</>
+                      : <><Zap size={14} /> Analyze Market</>}
+                  </button>
+                </div>
+              </>
+            )}
 
             {error && (
               <div
@@ -1011,7 +1158,8 @@ Narrative: ${result.narrative}`;
                 {error}
               </div>
             )}
-          </div>
+          </div>{/* inner padding div */}
+          </div>{/* card div */}
 
           {/* Example pills */}
           {!result && (
@@ -1860,29 +2008,34 @@ Narrative: ${result.narrative}`;
         )}
 
         {/* ── Empty state ── */}
-        {!result && !loading && (
+        {!result && !loading && !agentRunning && (
           <div
-            className="card p-16 text-center max-w-lg mx-auto"
-            style={{ borderStyle: 'dashed', background: 'transparent', animation: 'fadeUp 0.5s ease-out 0.2s both' }}
+            className="text-center max-w-lg mx-auto py-16"
+            style={{ animation: 'fadeUp 0.5s ease-out 0.2s both' }}
           >
-            <div
-              className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4"
-              style={{ background: 'var(--indigo-lo)', border: '1px solid var(--border-hi)' }}
-            >
-              <TrendingUp size={24} style={{ color: 'var(--indigo)', opacity: 0.7 }} />
+            {/* Animated grid icon */}
+            <div className="relative mx-auto mb-6" style={{ width: 64, height: 64 }}>
+              <div
+                className="absolute inset-0 rounded-2xl"
+                style={{ background: 'var(--indigo-lo)', border: '1px solid var(--border-hi)', animation: 'pulse-glow 3s infinite' }}
+              />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <TrendingUp size={26} style={{ color: 'var(--indigo)', opacity: 0.8 }} />
+              </div>
             </div>
-            <p className="font-semibold mb-1" style={{ color: 'var(--fg-2)' }}>
-              No analysis yet
+            <p className="font-semibold mb-2" style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: '1rem' }}>
+              Ready to analyze
             </p>
-            <p className="text-sm" style={{ color: 'var(--fg-3)' }}>
-              Fill in the form above and click Analyze Market to generate your TAM · SAM · SOM breakdown.
+            <p className="text-sm leading-relaxed" style={{ color: 'var(--fg-3)', maxWidth: 340, margin: '0 auto' }}>
+              Describe your market or paste your startup idea above — the AI will do the rest.
             </p>
             <div
-              className="flex items-center justify-center gap-1.5 mt-4 text-xs"
-              style={{ color: 'var(--fg-4)', fontFamily: 'var(--font-mono)' }}
+              className="flex items-center justify-center gap-2 mt-5"
+              style={{ color: 'var(--fg-4)', fontFamily: 'var(--font-mono)', fontSize: '0.6rem', letterSpacing: '0.1em' }}
             >
-              <ChevronDown size={12} style={{ animation: 'pulse-glow 2s infinite' }} />
-              Powered by Claude claude-opus-4-6
+              <div className="h-px w-12" style={{ background: 'var(--border)' }} />
+              GROQ · LLAMA 3.3 · 70B
+              <div className="h-px w-12" style={{ background: 'var(--border)' }} />
             </div>
           </div>
         )}
@@ -1891,14 +2044,19 @@ Narrative: ${result.narrative}`;
 
       {/* Footer */}
       <footer
-        className="px-8 py-4 mt-8 text-center text-xs"
+        className="px-8 py-5 mt-8 text-center"
         style={{
-          borderTop: '1px solid var(--border)',
-          color: 'var(--fg-4)',
-          fontFamily: 'var(--font-mono)',
+          borderTop: '1px solid rgba(255,255,255,0.05)',
+          background: 'rgba(0,0,0,0.2)',
         }}
       >
-        ATLAS · Market Sizing Engine · Powered by Claude · LLM generates assumptions, deterministic engine does all math
+        <div className="flex items-center justify-center gap-3" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', color: 'var(--fg-4)', letterSpacing: '0.1em' }}>
+          <span>ATLAS</span>
+          <span style={{ color: 'var(--fg-4)', opacity: 0.4 }}>·</span>
+          <span>MARKET INTELLIGENCE ENGINE</span>
+          <span style={{ color: 'var(--fg-4)', opacity: 0.4 }}>·</span>
+          <span>GROQ · LLAMA 3.3 · 70B</span>
+        </div>
       </footer>
     </div>
   );
@@ -1908,28 +2066,35 @@ Narrative: ${result.narrative}`;
 
 function AtlasLogo() {
   return (
-    <div className="flex items-center gap-2.5">
-      <div
-        className="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold"
-        style={{
-          background: 'linear-gradient(135deg, #4F46E5 0%, #818CF8 100%)',
-          color: 'white',
-          fontFamily: 'var(--font-display)',
-          boxShadow: '0 2px 12px rgba(99,102,241,0.4)',
-        }}
-      >
-        A
+    <div className="flex items-center gap-3">
+      {/* Globe grid icon */}
+      <div style={{ width: 34, height: 34, flexShrink: 0 }}>
+        <svg width="34" height="34" viewBox="0 0 34 34" fill="none">
+          <rect width="34" height="34" rx="9" fill="rgba(59,130,246,0.12)" stroke="rgba(59,130,246,0.28)" strokeWidth="1"/>
+          <circle cx="17" cy="17" r="8.5" stroke="#3B82F6" strokeWidth="1.2" fill="none"/>
+          <line x1="17" y1="8.5" x2="17" y2="25.5" stroke="#3B82F6" strokeWidth="1" strokeOpacity="0.7"/>
+          <line x1="8.5" y1="17" x2="25.5" y2="17" stroke="#3B82F6" strokeWidth="1" strokeOpacity="0.7"/>
+          <ellipse cx="17" cy="17" rx="4.5" ry="8.5" stroke="rgba(59,130,246,0.45)" strokeWidth="1" fill="none"/>
+          <circle cx="17" cy="17" r="1.8" fill="#60A5FA"/>
+        </svg>
       </div>
-      <span
-        className="text-sm font-bold tracking-widest"
-        style={{
-          fontFamily: 'var(--font-mono)',
-          color: 'var(--fg-1)',
-          letterSpacing: '0.2em',
-        }}
-      >
-        ATLAS
-      </span>
+      <div className="flex flex-col" style={{ lineHeight: 1 }}>
+        <span
+          className="font-bold tracking-widest"
+          style={{
+            fontFamily: 'var(--font-sans)',
+            fontSize: '0.9rem',
+            fontWeight: 800,
+            color: 'var(--fg-1)',
+            letterSpacing: '0.22em',
+          }}
+        >
+          ATLAS
+        </span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.55rem', color: 'var(--fg-4)', letterSpacing: '0.08em' }}>
+          MARKET INTELLIGENCE
+        </span>
+      </div>
     </div>
   );
 }

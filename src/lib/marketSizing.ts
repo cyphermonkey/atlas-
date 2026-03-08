@@ -1,7 +1,7 @@
 /**
  * Market Sizing Engine — Groq backend
  *
- * Key is read from import.meta.env.VITE_GROQ_API_KEY (set in .env, never committed).
+ * Key is read from process.env.NEXT_PUBLIC_GROQ_API_KEY (set in .env, never committed).
  * LLM generates structured assumptions; deterministic engine does all arithmetic.
  */
 
@@ -49,10 +49,10 @@ export interface SanityCheckResult {
 // ─── Internal client (lazy-init, key from env) ────────────────────────────────
 
 function getClient() {
-  const key = import.meta.env.VITE_GROQ_API_KEY as string | undefined;
+  const key = process.env.NEXT_PUBLIC_GROQ_API_KEY as string | undefined;
   if (!key || key === 'your_groq_api_key_here') {
     throw new Error(
-      'Groq API key not found. Create a .env file with VITE_GROQ_API_KEY=your_key and restart the dev server.'
+      'Groq API key not found. Add NEXT_PUBLIC_GROQ_API_KEY to your .env.local and restart the dev server.'
     );
   }
   return new Groq({ apiKey: key, dangerouslyAllowBrowser: true });
@@ -706,4 +706,210 @@ Return ONLY this JSON (no code fences):
   const raw = res.choices[0]?.message?.content ?? '{}';
   const parsed = parseJsonSafe<InvestmentThesis>(raw);
   return parsed ?? { memo: '', key_metrics: [], risks: [], verdict: 'Neutral' };
+}
+
+// ─── Idea Agent ────────────────────────────────────────────────────────────────
+
+export type AgentPhase =
+  | 'extract' | 'plan' | 'search' | 'synthesize' | 'competitors' | 'done' | 'error';
+
+export interface AgentUpdate {
+  phase: AgentPhase;
+  message: string;
+  detail?: string;
+}
+
+export interface AgentResult {
+  input:       MarketSizingInput;
+  result:      MarketSizingResult;
+  competitors: Competitor[];
+}
+
+async function tavilySearch(query: string): Promise<string> {
+  const key = process.env.NEXT_PUBLIC_TAVILY_API_KEY as string | undefined;
+  if (!key) return '';
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: key,
+        query,
+        search_depth: 'basic',
+        max_results: 4,
+        include_answer: true,
+      }),
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    const answer  = data.answer ? `Summary: ${data.answer}\n\n` : '';
+    const results = (data.results ?? [])
+      .map((r: { title: string; content: string }) => `[${r.title}]\n${r.content}`)
+      .join('\n\n');
+    return answer + results;
+  } catch {
+    return '';
+  }
+}
+
+export async function runIdeaAgent(
+  idea: string,
+  onUpdate: (u: AgentUpdate) => void,
+): Promise<AgentResult> {
+  const groq = getClient();
+
+  // ── 1. Extract context + plan searches ──────────────────────────────────────
+  onUpdate({ phase: 'extract', message: 'Understanding your idea…' });
+
+  const extractRes = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{
+      role: 'user',
+      content: `You are a market research strategist. A founder described their startup:
+"${idea}"
+
+Extract the core business context and plan targeted web searches.
+Return JSON:
+{
+  "market": "concise market name (e.g. 'B2B SaaS for CA firms — GST automation')",
+  "geography": "primary geography (e.g. 'India')",
+  "year": ${new Date().getFullYear()},
+  "methodology": "top-down or bottom-up — pick the right one",
+  "business_context": "2-3 sentence description of the business, target customer, revenue model",
+  "search_queries": [
+    "6 specific search queries to find: market size data, growth rates, number of target customers, key competitors, and recent reports. Be specific."
+  ]
+}`,
+    }],
+    response_format: { type: 'json_object' },
+  });
+
+  type ExtractedContext = {
+    market: string;
+    geography: string;
+    year: number;
+    methodology: Methodology;
+    business_context: string;
+    search_queries: string[];
+  };
+
+  const extracted = parseJsonSafe<ExtractedContext>(
+    extractRes.choices[0]?.message?.content ?? '{}'
+  );
+  if (!extracted) throw new Error('Could not parse idea. Try rephrasing.');
+
+  const queries = (extracted.search_queries ?? []).slice(0, 6);
+  onUpdate({ phase: 'plan', message: `Planned ${queries.length} web searches`, detail: queries.join(' · ') });
+
+  // ── 2. Web search ───────────────────────────────────────────────────────────
+  const hasTavily = !!(process.env.NEXT_PUBLIC_TAVILY_API_KEY as string | undefined);
+  const searchResults: string[] = [];
+
+  if (hasTavily) {
+    for (let i = 0; i < queries.length; i++) {
+      onUpdate({ phase: 'search', message: `Searching ${i + 1} of ${queries.length}…`, detail: queries[i] });
+      const text = await tavilySearch(queries[i]);
+      if (text) searchResults.push(`=== Query: ${queries[i]} ===\n${text}`);
+    }
+  } else {
+    onUpdate({ phase: 'search', message: 'Using LLM knowledge base (no search key configured)', detail: 'Add NEXT_PUBLIC_TAVILY_API_KEY for live Google results' });
+  }
+
+  const searchContext = searchResults.length > 0
+    ? `\n\nWEB SEARCH RESULTS:\n${searchResults.join('\n\n---\n\n')}`
+    : '\n\n(No live search data — use training knowledge to estimate realistically.)';
+
+  // ── 3. Synthesize market sizing ─────────────────────────────────────────────
+  onUpdate({ phase: 'synthesize', message: 'Analyzing data and sizing the market…' });
+
+  const synthRes = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{
+      role: 'user',
+      content: `You are a McKinsey market analyst. Use the context and search data to produce a rigorous market sizing.
+
+BUSINESS: ${extracted.business_context}
+MARKET: ${extracted.market}
+GEOGRAPHY: ${extracted.geography}
+YEAR: ${extracted.year}
+METHODOLOGY: ${extracted.methodology}
+${searchContext}
+
+Build a ${extracted.methodology} market sizing. Use real data from search results where available.
+Return JSON:
+{
+  "methodology": "${extracted.methodology}",
+  "steps": [
+    {
+      "id": "s1",
+      "label": "Step label — source name",
+      "value": 50000000,
+      "unit": "people | ₹ | %",
+      "rationale": "Why this number, citing search data if available",
+      "source": "Source name or Estimated",
+      "confidence": "high|medium|low",
+      "operation": "start|multiply|percentage|subtract|add"
+    }
+  ],
+  "tam": 50000000000,
+  "sam": 15000000000,
+  "som": 1500000000,
+  "narrative": "200-word analyst narrative explaining the opportunity, key drivers, and sizing rationale. Reference actual data points from search results where available."
+}
+All monetary values in INR. 6–10 steps. First step operation must be "start".`,
+    }],
+    response_format: { type: 'json_object' },
+  });
+
+  const sizingResult = parseJsonSafe<MarketSizingResult>(
+    synthRes.choices[0]?.message?.content ?? '{}'
+  );
+  if (!sizingResult) throw new Error('Failed to generate market sizing. Please try again.');
+
+  // ── 4. Competitors ──────────────────────────────────────────────────────────
+  onUpdate({ phase: 'competitors', message: 'Building competitor landscape…' });
+
+  const compRes = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{
+      role: 'user',
+      content: `Identify 5–7 real competitors for this business.
+MARKET: ${extracted.market} in ${extracted.geography}
+${searchContext}
+
+Return JSON:
+{
+  "competitors": [
+    {
+      "name": "Company name",
+      "stage": "startup|growth|public|established",
+      "estimated_revenue": 50000000,
+      "market_share_pct": 5.2,
+      "hq": "City, Country",
+      "founded": "2019",
+      "description": "One sentence on what they do and their edge"
+    }
+  ]
+}
+Estimated revenue in INR. Use real companies from search results.`,
+    }],
+    response_format: { type: 'json_object' },
+  });
+
+  const compParsed = parseJsonSafe<{ competitors: Competitor[] }>(
+    compRes.choices[0]?.message?.content ?? '{}'
+  );
+
+  onUpdate({ phase: 'done', message: 'Report ready!' });
+
+  return {
+    input: {
+      market:      extracted.market,
+      geography:   extracted.geography,
+      year:        extracted.year,
+      methodology: extracted.methodology,
+    },
+    result:      sizingResult,
+    competitors: compParsed?.competitors ?? [],
+  };
 }
