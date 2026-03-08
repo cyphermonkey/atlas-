@@ -871,7 +871,7 @@ Narrative: ${result.narrative}`;
 
       {/* ── Header ── */}
       <header
-        className="sticky top-0 z-30 px-8 py-4 flex items-center justify-between"
+        className="sticky top-0 z-30 px-4 sm:px-8 py-4 flex items-center justify-between"
         style={{
           background: 'rgba(6,10,18,0.85)',
           backdropFilter: 'blur(12px)',
@@ -880,8 +880,8 @@ Narrative: ${result.narrative}`;
       >
         <div className="flex items-center gap-4">
           <AtlasLogo />
-          <div className="h-4 w-px" style={{ background: 'var(--border)' }} />
-          <span className="text-xs" style={{ color: 'var(--fg-3)', fontFamily: 'var(--font-mono)' }}>
+          <div className="hidden sm:block h-4 w-px" style={{ background: 'var(--border)' }} />
+          <span className="hidden sm:inline text-xs" style={{ color: 'var(--fg-3)', fontFamily: 'var(--font-mono)' }}>
             Market Intelligence Engine
           </span>
         </div>
@@ -900,13 +900,13 @@ Narrative: ${result.narrative}`;
         </div>
       </header>
 
-      <main className="px-8 py-8 max-w-screen-xl mx-auto">
+      <main className="px-4 sm:px-8 py-6 sm:py-8 max-w-screen-xl mx-auto">
 
         {/* ── Hero + form ── */}
         <div className="mb-10" style={{ animation: 'fadeUp 0.5s ease-out' }}>
           <div className="label mb-2">Market Sizing</div>
           <h1
-            className="text-5xl mb-3 leading-tight"
+            className="text-3xl sm:text-5xl mb-3 leading-tight"
             style={{ fontFamily: 'var(--font-display)', color: 'var(--fg-1)', fontWeight: 600 }}
           >
             Size any market in<br />
@@ -922,7 +922,7 @@ Narrative: ${result.narrative}`;
             className="card p-5"
             style={{ maxWidth: 860 }}
           >
-            <div className="grid gap-4" style={{ gridTemplateColumns: '1fr 180px 120px' }}>
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-[1fr_180px_120px]">
               {/* Market */}
               <div>
                 <label className="label mb-1.5 flex items-center gap-1.5">
@@ -1051,7 +1051,7 @@ Narrative: ${result.narrative}`;
           <div style={{ animation: 'fadeUp 0.5s ease-out' }}>
 
             {/* Summary bar */}
-            <div className="flex items-center justify-between mb-5">
+            <div className="flex flex-wrap items-start sm:items-center justify-between gap-3 mb-5">
               <div>
                 <h2
                   className="text-lg font-semibold"
@@ -1075,14 +1075,14 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* Metric cards */}
-            <div className="grid grid-cols-3 gap-4 mb-6">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
               <MetricCard label="TAM" sublabel="Total"       value={computed.tam} color="var(--indigo)"  delay={0}   run={animated} />
               <MetricCard label="SAM" sublabel="Serviceable" value={computed.sam} color="var(--cyan)"    delay={100} run={animated} />
               <MetricCard label="SOM" sublabel="Obtainable"  value={computed.som} color="var(--emerald)" delay={200} run={animated} />
             </div>
 
             {/* Table + sidebar */}
-            <div className="grid gap-5 mb-5" style={{ gridTemplateColumns: '1fr 360px' }}>
+            <div className="grid gap-5 mb-5 grid-cols-1 lg:grid-cols-[1fr_360px]">
 
               {/* Assumptions table */}
               <div className="card overflow-hidden">
@@ -1213,7 +1213,7 @@ Narrative: ${result.narrative}`;
               </div>
 
               {scenarios.length > 0 && (
-                <div className="grid grid-cols-3 gap-0" style={{ borderTop: '1px solid var(--border)' }}>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-0" style={{ borderTop: '1px solid var(--border)' }}>
                   {scenarios.map((s) => {
                     const colors = {
                       bear: { main: '#F87171', bg: 'rgba(248,113,113,0.05)', border: 'rgba(248,113,113,0.12)' },
@@ -1360,7 +1360,7 @@ Narrative: ${result.narrative}`;
               </div>
               {porters && (
                 <div className="p-5">
-                  <div className="grid gap-6" style={{ gridTemplateColumns: '320px 1fr' }}>
+                  <div className="grid gap-6 grid-cols-1 md:grid-cols-[320px_1fr]">
                     <div>
                       <PentagonChart data={porters} />
                       <div className="mt-3 text-center">
@@ -1429,7 +1429,7 @@ Narrative: ${result.narrative}`;
                 )}
               </div>
               {swot && (
-                <div className="grid grid-cols-2" style={{ borderTop: '1px solid var(--border)' }}>
+                <div className="grid grid-cols-1 sm:grid-cols-2" style={{ borderTop: '1px solid var(--border)' }}>
                   {[
                     { key: 'strengths',     label: 'Strengths',     color: '#34D399', bg: 'rgba(52,211,153,0.04)',  items: swot.strengths     },
                     { key: 'weaknesses',    label: 'Weaknesses',    color: '#F87171', bg: 'rgba(248,113,113,0.04)', items: swot.weaknesses    },
@@ -1665,7 +1665,7 @@ Narrative: ${result.narrative}`;
                   const ltvCacColor = ltvCacRatio >= 3 ? '#34D399' : ltvCacRatio >= 1 ? '#FBBF24' : '#F87171';
 
                   return (
-                    <div className="grid gap-6" style={{ gridTemplateColumns: '1fr 1fr' }}>
+                    <div className="grid gap-6 grid-cols-1 sm:grid-cols-2">
                       {/* Inputs */}
                       <div className="flex flex-col gap-3">
                         <div className="label mb-1">Inputs</div>
