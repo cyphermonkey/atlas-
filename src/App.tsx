@@ -650,6 +650,16 @@ export default function App() {
   const [agentLogs, setAgentLogs]     = useState<AgentUpdate[]>([]);
   const [agentRunning, setAgentRunning] = useState(false);
 
+  // Competitor enrichment (live financial + funding data)
+  const [enrichedData, setEnrichedData] = useState<Record<string, {
+    financials?: { ticker?: string; marketCap?: number; stockPrice?: number; peRatio?: number; source: string };
+    funding?: { totalRaised?: number; lastRound?: string; investors?: string[]; valuation?: number; source: string };
+  }>>({});
+  const [enriching, setEnriching] = useState(false);
+
+  // Export modal
+  const [exportModal, setExportModal] = useState<null | 'notion' | 'slack'>(null);
+
   // Unit economics (pure frontend, no loading)
   const [arpu, setArpu] = useState(50);
   const [churnPct, setChurnPct] = useState(2);
@@ -751,6 +761,32 @@ export default function App() {
     } finally {
       setCompetitorsLoading(false);
     }
+  }
+
+  async function enrichCompetitors() {
+    if (enriching || competitors.length === 0) return;
+    setEnriching(true);
+    const groqKey = process.env.NEXT_PUBLIC_GROQ_API_KEY ?? '';
+    const tavilyKey = process.env.NEXT_PUBLIC_TAVILY_API_KEY ?? '';
+    for (const c of competitors) {
+      // Yahoo Finance (public co.)
+      try {
+        const fin = await fetch(`/api/financials?name=${encodeURIComponent(c.name)}`).then(r => r.json());
+        setEnrichedData(prev => ({ ...prev, [c.name]: { ...prev[c.name], financials: fin } }));
+      } catch { /* ignore */ }
+      // CrunchBase via Tavily + Groq
+      if (tavilyKey) {
+        try {
+          const fund = await fetch('/api/funding', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ companyName: c.name, tavilyKey, groqKey }),
+          }).then(r => r.json());
+          setEnrichedData(prev => ({ ...prev, [c.name]: { ...prev[c.name], funding: fund } }));
+        } catch { /* ignore */ }
+      }
+    }
+    setEnriching(false);
   }
 
   async function loadScenarios() {
@@ -1211,10 +1247,18 @@ Narrative: ${result.narrative}`;
                   </span>
                 </h2>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button onClick={exportToPDF} className="btn-ghost text-xs flex items-center gap-1.5"
                   style={{ borderColor: 'rgba(251,191,36,0.3)', color: 'var(--amber)' }}>
-                  <FileDown size={12} /> Export PDF
+                  <FileDown size={12} /> PDF
+                </button>
+                <button onClick={() => setExportModal('notion')} className="btn-ghost text-xs flex items-center gap-1.5"
+                  style={{ borderColor: 'rgba(99,102,241,0.3)', color: 'var(--indigo)' }}>
+                  <FileText size={12} /> Notion
+                </button>
+                <button onClick={() => setExportModal('slack')} className="btn-ghost text-xs flex items-center gap-1.5"
+                  style={{ borderColor: 'rgba(52,211,153,0.3)', color: 'var(--emerald)' }}>
+                  <MessageSquare size={12} /> Slack
                 </button>
                 <button onClick={reset} className="btn-ghost text-xs">
                   <RefreshCw size={12} /> New analysis
@@ -1417,16 +1461,28 @@ Narrative: ${result.narrative}`;
                     </span>
                   )}
                 </div>
-                {competitors.length === 0 && (
-                  <button
-                    onClick={loadCompetitors}
-                    disabled={competitorsLoading}
-                    className="btn-ghost text-xs"
-                    style={{ borderColor: 'rgba(52,211,153,0.3)', color: 'var(--emerald)' }}
-                  >
-                    {competitorsLoading ? <><Loader2 size={12} className="animate-spin" /> Generating…</> : <><Zap size={12} /> Map Competitors</>}
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {competitors.length > 0 && (
+                    <button
+                      onClick={enrichCompetitors}
+                      disabled={enriching}
+                      className="btn-ghost text-xs flex items-center gap-1.5"
+                      style={{ borderColor: 'rgba(251,191,36,0.3)', color: 'var(--amber)' }}
+                    >
+                      {enriching ? <><Loader2 size={12} className="animate-spin" /> Enriching…</> : <><TrendingUp size={12} /> Live Data</>}
+                    </button>
+                  )}
+                  {competitors.length === 0 && (
+                    <button
+                      onClick={loadCompetitors}
+                      disabled={competitorsLoading}
+                      className="btn-ghost text-xs"
+                      style={{ borderColor: 'rgba(52,211,153,0.3)', color: 'var(--emerald)' }}
+                    >
+                      {competitorsLoading ? <><Loader2 size={12} className="animate-spin" /> Generating…</> : <><Zap size={12} /> Map Competitors</>}
+                    </button>
+                  )}
+                </div>
               </div>
 
               {competitors.length > 0 && (
@@ -1434,7 +1490,7 @@ Narrative: ${result.narrative}`;
                   <table className="w-full" style={{ borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ background: 'rgba(0,0,0,0.25)', borderBottom: '1px solid var(--border)' }}>
-                        {['Company', 'Stage', 'Est. Revenue', 'Market Share', 'HQ', 'About'].map(h => (
+                        {['Company', 'Stage', 'Est. Revenue', 'Market Share', 'HQ', 'About', ...(Object.keys(enrichedData).length > 0 ? ['Mkt Cap / Raised', 'Investors'] : [])].map(h => (
                           <th key={h} className="px-4 py-2.5 text-left"
                             style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-3)', fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
                             {h}
@@ -1480,6 +1536,43 @@ Narrative: ${result.narrative}`;
                             <td className="px-4 py-3" style={{ maxWidth: 260 }}>
                               <p className="text-xs leading-relaxed" style={{ color: 'var(--fg-2)' }}>{c.description}</p>
                             </td>
+                            {Object.keys(enrichedData).length > 0 && (() => {
+                              const ed = enrichedData[c.name];
+                              const fin = ed?.financials;
+                              const fund = ed?.funding;
+                              const displayVal = fin?.marketCap
+                                ? (fin.marketCap >= 1e9 ? `$${(fin.marketCap / 1e9).toFixed(1)}B` : `$${(fin.marketCap / 1e6).toFixed(0)}M`)
+                                : fund?.totalRaised
+                                ? (fund.totalRaised >= 1e9 ? `$${(fund.totalRaised / 1e9).toFixed(1)}B raised` : `$${(fund.totalRaised / 1e6).toFixed(0)}M raised`)
+                                : null;
+                              const isLoading = enriching && !ed;
+                              return (
+                                <>
+                                  <td className="px-4 py-3">
+                                    {isLoading
+                                      ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--fg-4)' }} />
+                                      : displayVal
+                                      ? <div>
+                                          <span className="text-sm font-bold" style={{ fontFamily: 'var(--font-mono)', color: fin?.marketCap ? 'var(--emerald)' : 'var(--amber)' }}>{displayVal}</span>
+                                          {fin?.ticker && <div className="text-xs mt-0.5" style={{ color: 'var(--fg-4)', fontFamily: 'var(--font-mono)', fontSize: '0.6rem' }}>{fin.ticker} · ${fin.stockPrice?.toFixed(2)}</div>}
+                                          {fund?.lastRound && <div className="text-xs mt-0.5" style={{ color: 'var(--fg-4)', fontFamily: 'var(--font-mono)', fontSize: '0.6rem' }}>{fund.lastRound}</div>}
+                                        </div>
+                                      : <span style={{ color: 'var(--fg-4)', fontSize: '0.7rem' }}>—</span>}
+                                  </td>
+                                  <td className="px-4 py-3" style={{ maxWidth: 180 }}>
+                                    {isLoading
+                                      ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--fg-4)' }} />
+                                      : fund?.investors?.length
+                                      ? <div className="flex flex-wrap gap-1">
+                                          {fund.investors.slice(0, 3).map((inv: string, j: number) => (
+                                            <span key={j} className="tag" style={{ fontSize: '0.6rem', color: 'var(--fg-3)', background: 'var(--ink-3)' }}>{inv}</span>
+                                          ))}
+                                        </div>
+                                      : <span style={{ color: 'var(--fg-4)', fontSize: '0.7rem' }}>—</span>}
+                                  </td>
+                                </>
+                              );
+                            })()}
                           </tr>
                         );
                       })}
@@ -2043,6 +2136,17 @@ Narrative: ${result.narrative}`;
       </main>
 
       {/* Footer */}
+      {/* Export Modal */}
+      {exportModal && result && (
+        <ExportModal
+          type={exportModal}
+          result={result}
+          input={input}
+          competitors={competitors}
+          onClose={() => setExportModal(null)}
+        />
+      )}
+
       <footer
         className="px-8 py-5 mt-8 text-center"
         style={{
@@ -2094,6 +2198,160 @@ function AtlasLogo() {
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.55rem', color: 'var(--fg-4)', letterSpacing: '0.08em' }}>
           MARKET INTELLIGENCE
         </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Export Modal ─────────────────────────────────────────────────────────────
+
+function ExportModal({
+  type, onClose, result, input, competitors,
+}: {
+  type: 'notion' | 'slack';
+  onClose: () => void;
+  result: MarketSizingResult;
+  input: MarketSizingInput;
+  competitors: Competitor[];
+}) {
+  const isNotion = type === 'notion';
+
+  const [token, setToken] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem(`atlas_${type}_token`) ?? '' : ''
+  );
+  const [parentId, setParentId] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('atlas_notion_parent') ?? '' : ''
+  );
+  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [errMsg, setErrMsg] = useState('');
+  const [notionUrl, setNotionUrl] = useState('');
+
+  function saveToStorage(val: string, field: 'token' | 'parent') {
+    if (typeof window === 'undefined') return;
+    if (field === 'token') localStorage.setItem(`atlas_${type}_token`, val);
+    else localStorage.setItem('atlas_notion_parent', val);
+  }
+
+  async function doExport() {
+    setStatus('loading'); setErrMsg('');
+    try {
+      if (isNotion) {
+        const res = await fetch('/api/export/notion', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, parentPageId: parentId, input, result, competitors }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? 'Notion export failed');
+        setNotionUrl(data.url);
+      } else {
+        const res = await fetch('/api/export/slack', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ webhookUrl: token, input, result, competitors }),
+        });
+        if (!res.ok) throw new Error('Slack webhook failed');
+      }
+      setStatus('done');
+    } catch (e) {
+      setStatus('error');
+      setErrMsg(e instanceof Error ? e.message : 'Export failed');
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="card w-full max-w-md"
+        style={{ animation: 'fadeUp 0.3s cubic-bezier(0.22,1,0.36,1) both' }}
+      >
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div className="flex items-center gap-2">
+            {isNotion
+              ? <FileText size={14} style={{ color: 'var(--indigo)' }} />
+              : <MessageSquare size={14} style={{ color: 'var(--emerald)' }} />}
+            <span className="label">{isNotion ? 'Export to Notion' : 'Send to Slack'}</span>
+          </div>
+          <button onClick={onClose} className="btn-ghost text-xs" style={{ padding: '4px 8px' }}>✕</button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {status === 'done' ? (
+            <div className="text-center py-4">
+              <div className="text-2xl mb-2">✓</div>
+              <p className="text-sm font-semibold" style={{ color: 'var(--emerald)' }}>
+                {isNotion ? 'Report created in Notion' : 'Report sent to Slack'}
+              </p>
+              {notionUrl && (
+                <a
+                  href={notionUrl} target="_blank" rel="noopener noreferrer"
+                  className="btn-ghost text-xs mt-3 inline-flex items-center gap-1.5"
+                  style={{ color: 'var(--indigo)' }}
+                >
+                  Open in Notion ↗
+                </a>
+              )}
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="label block mb-1.5">
+                  {isNotion ? 'Integration Token' : 'Webhook URL'}
+                </label>
+                <input
+                  type="password"
+                  value={token}
+                  onChange={e => { setToken(e.target.value); saveToStorage(e.target.value, 'token'); }}
+                  placeholder={isNotion ? 'secret_...' : 'https://hooks.slack.com/services/...'}
+                  className="input w-full text-sm"
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}
+                />
+                <p className="text-xs mt-1" style={{ color: 'var(--fg-4)' }}>
+                  {isNotion
+                    ? 'Create at notion.so/my-integrations — share your page with the integration first'
+                    : 'Create at api.slack.com/apps → Incoming Webhooks'}
+                </p>
+              </div>
+
+              {isNotion && (
+                <div>
+                  <label className="label block mb-1.5">Parent Page ID</label>
+                  <input
+                    type="text"
+                    value={parentId}
+                    onChange={e => { setParentId(e.target.value); saveToStorage(e.target.value, 'parent'); }}
+                    placeholder="Page ID from URL (32-char hex)"
+                    className="input w-full"
+                    style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}
+                  />
+                  <p className="text-xs mt-1" style={{ color: 'var(--fg-4)' }}>
+                    From page URL: notion.so/Your-Page-<strong>abc123def456...</strong>
+                  </p>
+                </div>
+              )}
+
+              {status === 'error' && (
+                <p className="text-xs px-3 py-2 rounded" style={{ color: '#F87171', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)' }}>
+                  {errMsg}
+                </p>
+              )}
+
+              <button
+                onClick={doExport}
+                disabled={status === 'loading' || !token || (isNotion && !parentId)}
+                className="btn w-full flex items-center justify-center gap-2"
+              >
+                {status === 'loading'
+                  ? <><Loader2 size={14} className="animate-spin" /> Exporting…</>
+                  : isNotion ? 'Create Notion Page' : 'Send to Slack'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
