@@ -1,0 +1,709 @@
+/**
+ * Market Sizing Engine — Groq backend
+ *
+ * Key is read from import.meta.env.VITE_GROQ_API_KEY (set in .env, never committed).
+ * LLM generates structured assumptions; deterministic engine does all arithmetic.
+ */
+
+import Groq from 'groq-sdk';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type Methodology   = 'top-down' | 'bottom-up';
+export type Confidence    = 'high' | 'medium' | 'low';
+export type StepOperation = 'start' | 'multiply' | 'percentage' | 'subtract' | 'add';
+
+export interface MarketSizingInput {
+  market:      string;
+  geography:   string;
+  year:        number;
+  methodology: Methodology;
+}
+
+export interface SizingStep {
+  id:         string;
+  label:      string;
+  value:      number;
+  unit:       string;
+  rationale:  string;
+  source:     string;
+  confidence: Confidence;
+  operation:  StepOperation;
+}
+
+export interface MarketSizingResult {
+  methodology: Methodology;
+  steps:       SizingStep[];
+  tam:         number;
+  sam:         number;
+  som:         number;
+  narrative:   string;
+}
+
+export interface SanityCheckResult {
+  valid:            boolean;
+  warning?:         string;
+  suggested_value?: number;
+}
+
+// ─── Internal client (lazy-init, key from env) ────────────────────────────────
+
+function getClient() {
+  const key = import.meta.env.VITE_GROQ_API_KEY as string | undefined;
+  if (!key || key === 'your_groq_api_key_here') {
+    throw new Error(
+      'Groq API key not found. Create a .env file with VITE_GROQ_API_KEY=your_key and restart the dev server.'
+    );
+  }
+  return new Groq({ apiKey: key, dangerouslyAllowBrowser: true });
+}
+
+// ─── Deterministic calculation engine (zero LLM) ─────────────────────────────
+
+export function recalculate(steps: SizingStep[]): { tam: number; sam: number; som: number } {
+  if (!steps.length) return { tam: 0, sam: 0, som: 0 };
+
+  let running = 0;
+  for (const step of steps) {
+    switch (step.operation) {
+      case 'start':      running  = step.value;             break;
+      case 'multiply':   running *= step.value;             break;
+      case 'percentage': running *= step.value / 100;       break;
+      case 'subtract':   running -= step.value;             break;
+      case 'add':        running += step.value;             break;
+    }
+  }
+
+  const tam = Math.max(0, running);
+  return { tam, sam: tam * 0.3, som: tam * 0.05 };
+}
+
+export function formatCurrency(value: number, currency = 'INR'): string {
+  const prefix = currency === 'INR' ? '₹' : currency === 'EUR' ? '€' : '$';
+  if (value >= 1e12) return `${prefix}${(value / 1e12).toFixed(2)}T`;
+  if (value >= 1e9)  return `${prefix}${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6)  return `${prefix}${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3)  return `${prefix}${(value / 1e3).toFixed(1)}K`;
+  return `${prefix}${value.toFixed(0)}`;
+}
+
+// ─── Prompts ──────────────────────────────────────────────────────────────────
+
+function assumptionPrompt(i: MarketSizingInput): string {
+  return `You are a McKinsey senior analyst. Size the "${i.market}" market in ${i.geography} for year ${i.year} using the ${i.methodology} approach.
+
+Return ONLY a valid JSON object — no markdown fences, no extra text, no explanation.
+
+Required schema:
+{
+  "methodology": "${i.methodology}",
+  "steps": [
+    {
+      "id": "step_1",
+      "label": "clear name for this funnel step",
+      "value": <number>,
+      "unit": "people | USD | % | units | households | businesses",
+      "rationale": "1-2 sentences explaining the assumption",
+      "source": "specific source — e.g. World Bank 2024, Statista, industry estimate",
+      "confidence": "high | medium | low",
+      "operation": "start | multiply | percentage | subtract | add"
+    }
+  ],
+  "tam": <number>,
+  "sam": <number>,
+  "som": <number>,
+  "narrative": "2-3 sentence analyst summary of the opportunity and key risks"
+}
+
+Rules:
+- 4-7 steps flowing logically from broadest universe down to TAM
+- First step must have operation "start"
+- Subsequent steps narrow via multiply / percentage / subtract
+- TAM equals the running product when all steps are applied sequentially
+- SAM is 25-35% of TAM (serviceable segment); SOM is 3-8% of TAM (realistically capturable)
+- All monetary values in INR (Indian Rupees)
+- Mark confidence as "low" whenever the assumption is a rough estimate`;
+}
+
+function sanityPrompt(label: string, oldV: number, newV: number, context: string): string {
+  return `You are a market sizing fact-checker.
+A user changed the assumption "${label}" from ${fmt(oldV)} to ${fmt(newV)}.
+Context: ${context}
+
+Is ${fmt(newV)} a realistic value for "${label}" given this context?
+
+Return ONLY this JSON object (no fences, no extra text):
+{"valid": true|false, "warning": "brief direct explanation if invalid — omit key if valid", "suggested_value": <number or null>}`;
+}
+
+// ─── LLM: Assumption generation ───────────────────────────────────────────────
+
+export async function generateMarketAssumptions(
+  input: MarketSizingInput,
+  onChunk?: (raw: string) => void
+): Promise<MarketSizingResult> {
+  const groq = getClient();
+
+  let raw = '';
+
+  const messages: { role: 'system' | 'user'; content: string }[] = [
+    {
+      role: 'system',
+      content: 'You are a market sizing analyst. Always respond with a single valid JSON object matching the exact schema provided. No markdown, no extra keys, no nesting wrappers.',
+    },
+    { role: 'user', content: assumptionPrompt(input) },
+  ];
+
+  if (onChunk) {
+    const stream = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages,
+      response_format: { type: 'json_object' },
+      stream: true,
+    });
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content ?? '';
+      raw += delta;
+      onChunk(raw);
+    }
+  } else {
+    const result = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages,
+      response_format: { type: 'json_object' },
+    });
+    raw = result.choices[0]?.message?.content ?? '';
+  }
+
+  return parseResult(raw, input);
+}
+
+function parseResult(raw: string, input: MarketSizingInput): MarketSizingResult {
+  const cleaned = raw
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/g, '')
+    .trim();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    const m = cleaned.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('Model returned unparseable output. Please try again.');
+    parsed = JSON.parse(m[0]);
+  }
+
+  // Unwrap if model nested the result under a wrapper key
+  if (!parsed.steps && !parsed.tam) {
+    const nested = Object.values(parsed).find(
+      (v): v is Record<string, unknown> => typeof v === 'object' && v !== null && ('steps' in v || 'tam' in v)
+    );
+    if (nested) parsed = nested;
+  }
+
+  // Find steps array — model may use different key names
+  const rawSteps: Partial<SizingStep>[] =
+    parsed.steps ??
+    parsed.assumptions ??
+    parsed.funnel ??
+    parsed.funnel_steps ??
+    parsed.analysis_steps ??
+    [];
+
+  const steps: SizingStep[] = rawSteps.map((s: Partial<SizingStep>, i: number) => ({
+    id:         s.id         ?? `step_${i + 1}`,
+    label:      s.label      ?? `Step ${i + 1}`,
+    value:      Number(s.value ?? 0),
+    unit:       s.unit       ?? '',
+    rationale:  s.rationale  ?? '',
+    source:     s.source     ?? 'Industry estimate',
+    confidence: (s.confidence as Confidence) ?? 'medium',
+    operation:  (s.operation as StepOperation) ?? (i === 0 ? 'start' : 'multiply'),
+  }));
+
+  // Always recalculate — never trust LLM arithmetic
+  // Fall back to LLM-provided values if recalculate returns 0 (e.g. steps empty)
+  const calc = recalculate(steps);
+  const tam = calc.tam > 0 ? calc.tam : Number(parsed.tam ?? 0);
+  const sam = calc.sam > 0 ? calc.sam : Number(parsed.sam ?? tam * 0.3);
+  const som = calc.som > 0 ? calc.som : Number(parsed.som ?? tam * 0.05);
+
+  return {
+    methodology: (parsed.methodology as Methodology) ?? input.methodology,
+    steps,
+    tam,
+    sam,
+    som,
+    narrative: parsed.narrative ?? parsed.summary ?? '',
+  };
+}
+
+// ─── LLM: Sanity check ────────────────────────────────────────────────────────
+
+export async function sanityCheckAssumption(
+  label: string,
+  oldValue: number,
+  newValue: number,
+  context: string
+): Promise<SanityCheckResult> {
+  try {
+    const groq = getClient();
+
+    const result = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: sanityPrompt(label, oldValue, newValue, context) }],
+      response_format: { type: 'json_object' },
+    });
+
+    const raw = result.choices[0]?.message?.content ?? '{}';
+    const check = JSON.parse(raw) as SanityCheckResult;
+
+    return {
+      valid:           check.valid ?? true,
+      warning:         check.warning,
+      suggested_value: check.suggested_value ?? undefined,
+    };
+  } catch {
+    return { valid: true }; // fail open — never block the user
+  }
+}
+
+// ─── New feature types ────────────────────────────────────────────────────────
+
+export interface Competitor {
+  name: string;
+  estimated_revenue: number;
+  market_share_pct: number;
+  description: string;
+  hq: string;
+  stage: 'startup' | 'growth' | 'public' | 'established';
+  founded?: string;
+}
+
+export interface ScenarioResult {
+  name: 'bear' | 'base' | 'bull';
+  label: string;
+  description: string;
+  key_assumption: string;
+  tam: number;
+  sam: number;
+  som: number;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+// ─── Competitor benchmarking ──────────────────────────────────────────────────
+
+export async function generateCompetitors(
+  input: MarketSizingInput,
+  tam: number
+): Promise<Competitor[]> {
+  const groq = getClient();
+  const prompt = `You are a market research analyst. List the top 5 competitors in the "${input.market}" market in ${input.geography} as of ${input.year}.
+The total addressable market is approximately ${fmt(tam)} INR.
+
+Return ONLY a valid JSON object — no markdown, no extra text.
+{
+  "competitors": [
+    {
+      "name": "Company name",
+      "estimated_revenue": <number in INR>,
+      "market_share_pct": <number 0-100>,
+      "description": "1 sentence on what they do and why relevant",
+      "hq": "City, Country",
+      "stage": "startup | growth | public | established",
+      "founded": "year as string"
+    }
+  ]
+}
+All monetary values in INR. Estimate revenues proportionally to market share.`;
+
+  const result = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: 'You are a market research analyst. Always respond with valid JSON matching the exact schema provided. No wrappers.' },
+      { role: 'user', content: prompt },
+    ],
+    response_format: { type: 'json_object' },
+  });
+
+  const raw = result.choices[0]?.message?.content ?? '{}';
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed.competitors ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// ─── Scenario analysis ────────────────────────────────────────────────────────
+
+export async function generateScenarios(
+  input: MarketSizingInput,
+  baseTam: number
+): Promise<ScenarioResult[]> {
+  const groq = getClient();
+  const prompt = `You are a McKinsey senior analyst. Generate three market sizing scenarios for the "${input.market}" market in ${input.geography} for year ${input.year}.
+Base TAM is approximately ${fmt(baseTam)} INR.
+
+Return ONLY a valid JSON object:
+{
+  "scenarios": [
+    {
+      "name": "bear",
+      "label": "Bear Case",
+      "description": "One sentence on the macro/competitive driver for this scenario",
+      "key_assumption": "The single most important assumption that differs from base case",
+      "tam": <number in INR — 40-60% of base TAM>,
+      "sam": <25-35% of tam>,
+      "som": <3-8% of tam>
+    },
+    {
+      "name": "base",
+      "label": "Base Case",
+      "description": "...",
+      "key_assumption": "...",
+      "tam": <close to ${fmt(baseTam)} INR>,
+      "sam": <25-35% of tam>,
+      "som": <3-8% of tam>
+    },
+    {
+      "name": "bull",
+      "label": "Bull Case",
+      "description": "...",
+      "key_assumption": "...",
+      "tam": <150-250% of base TAM>,
+      "sam": <25-35% of tam>,
+      "som": <3-8% of tam>
+    }
+  ]
+}
+All monetary values in INR.`;
+
+  const result = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: 'You are a market sizing analyst. Always respond with valid JSON.' },
+      { role: 'user', content: prompt },
+    ],
+    response_format: { type: 'json_object' },
+  });
+
+  const raw = result.choices[0]?.message?.content ?? '{}';
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed.scenarios ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// ─── AI chat with analyst ─────────────────────────────────────────────────────
+
+export async function chatWithAnalyst(
+  messages: ChatMessage[],
+  marketContext: string,
+): Promise<string> {
+  const groq = getClient();
+
+  const result = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      {
+        role: 'system',
+        content: `You are a senior McKinsey analyst specializing in market sizing and strategy. You have just completed a market analysis:\n\n${marketContext}\n\nAnswer questions concisely and authoritatively. Use specific numbers from the analysis when relevant. Keep responses under 4 sentences unless the user asks for more detail.`,
+      },
+      ...messages,
+    ],
+    max_tokens: 600,
+  });
+
+  return result.choices[0]?.message?.content ?? '';
+}
+
+// ─── Helper ───────────────────────────────────────────────────────────────────
+
+function fmt(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
+}
+
+// ─── Extended feature types ───────────────────────────────────────────────────
+
+export interface PorterForce {
+  force: string;
+  score: number;      // 1–10
+  rating: 'Low' | 'Medium' | 'High';
+  rationale: string;
+}
+
+export interface PortersFiveForcesResult {
+  competitive_rivalry: PorterForce;
+  supplier_power: PorterForce;
+  buyer_power: PorterForce;
+  threat_of_substitutes: PorterForce;
+  threat_of_new_entrants: PorterForce;
+  overall_attractiveness: 'Low' | 'Medium' | 'High';
+  summary: string;
+}
+
+export interface SWOTResult {
+  strengths: string[];
+  weaknesses: string[];
+  opportunities: string[];
+  threats: string[];
+}
+
+export interface MarketSegment {
+  name: string;
+  tam_fraction: number;   // 0–1, all must sum to 1
+  description: string;
+  growth_rate_pct: number;
+}
+
+export interface GrowthProjection {
+  base_tam: number;
+  start_year: number;
+  years: number[];
+  bear: number[];
+  base_vals: number[];
+  bull: number[];
+  cagr_bear: number;
+  cagr_base: number;
+  cagr_bull: number;
+}
+
+export type RevenueModelType = 'saas' | 'transactional' | 'marketplace' | 'licensing';
+
+export interface RevenueProjectionYear {
+  year: number;
+  revenue: number;
+  gross_profit: number;
+  ebitda: number;
+}
+
+export interface RevenueProjection {
+  model_type: RevenueModelType;
+  years: RevenueProjectionYear[];
+  key_assumptions: string[];
+}
+
+export interface InvestmentThesis {
+  memo: string;
+  key_metrics: { label: string; value: string }[];
+  risks: string[];
+  verdict: 'Attractive' | 'Neutral' | 'Unattractive';
+}
+
+// ─── Internal JSON parser ─────────────────────────────────────────────────────
+
+function parseJsonSafe<T>(raw: string): T | null {
+  const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  try { return JSON.parse(cleaned) as T; } catch {
+    const m = cleaned.match(/\{[\s\S]*\}/);
+    try { return m ? JSON.parse(m[0]) as T : null; } catch { return null; }
+  }
+}
+
+// ─── Porter's Five Forces ─────────────────────────────────────────────────────
+
+export async function generatePortersFiveForces(
+  input: MarketSizingInput
+): Promise<PortersFiveForcesResult | null> {
+  const groq = getClient();
+  const prompt = `Analyze Porter's Five Forces for the "${input.market}" market in ${input.geography}.
+Return ONLY this JSON (no code fences, no extra keys):
+{
+  "competitive_rivalry":    { "force": "Competitive Rivalry",     "score": <1-10>, "rating": "Low|Medium|High", "rationale": "1 sentence" },
+  "supplier_power":         { "force": "Supplier Power",          "score": <1-10>, "rating": "Low|Medium|High", "rationale": "1 sentence" },
+  "buyer_power":            { "force": "Buyer Power",             "score": <1-10>, "rating": "Low|Medium|High", "rationale": "1 sentence" },
+  "threat_of_substitutes":  { "force": "Threat of Substitutes",   "score": <1-10>, "rating": "Low|Medium|High", "rationale": "1 sentence" },
+  "threat_of_new_entrants": { "force": "Threat of New Entrants",  "score": <1-10>, "rating": "Low|Medium|High", "rationale": "1 sentence" },
+  "overall_attractiveness": "Low|Medium|High",
+  "summary": "2 sentence overall market attractiveness assessment"
+}
+Score 1-3=Low, 4-6=Medium, 7-10=High. Higher score = more intense force = worse for incumbents.`;
+
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: prompt }],
+    response_format: { type: 'json_object' },
+  });
+  const raw = res.choices[0]?.message?.content ?? '{}';
+  return parseJsonSafe<PortersFiveForcesResult>(raw);
+}
+
+// ─── SWOT Analysis ────────────────────────────────────────────────────────────
+
+export async function generateSWOT(
+  input: MarketSizingInput,
+  tam: number
+): Promise<SWOTResult | null> {
+  const groq = getClient();
+  const prompt = `Generate a SWOT analysis for entering the "${input.market}" market in ${input.geography}. Market TAM ≈ ${fmt(tam)} INR.
+Return ONLY this JSON (no code fences):
+{
+  "strengths":     ["string", "string", "string"],
+  "weaknesses":    ["string", "string", "string"],
+  "opportunities": ["string", "string", "string"],
+  "threats":       ["string", "string", "string"]
+}
+Each item: 1 clear, specific, actionable sentence. 3–4 items per quadrant.`;
+
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: prompt }],
+    response_format: { type: 'json_object' },
+  });
+  const raw = res.choices[0]?.message?.content ?? '{}';
+  return parseJsonSafe<SWOTResult>(raw);
+}
+
+// ─── Market Segmentation ──────────────────────────────────────────────────────
+
+export async function generateSegmentation(
+  input: MarketSizingInput,
+  tam: number
+): Promise<MarketSegment[]> {
+  const groq = getClient();
+  const prompt = `Break down the "${input.market}" market in ${input.geography} into 5–6 key sub-segments. Total TAM ≈ ${fmt(tam)} INR.
+Return ONLY this JSON (no code fences):
+{
+  "segments": [
+    { "name": "Segment name", "tam_fraction": <0-1, all must sum to 1.0>, "description": "1 sentence", "growth_rate_pct": <CAGR number> }
+  ]
+}`;
+
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: prompt }],
+    response_format: { type: 'json_object' },
+  });
+  const raw = res.choices[0]?.message?.content ?? '{}';
+  const parsed = parseJsonSafe<{ segments: MarketSegment[] }>(raw);
+  return parsed?.segments ?? [];
+}
+
+// ─── Growth Rate Projector ────────────────────────────────────────────────────
+
+export async function generateGrowthProjection(
+  input: MarketSizingInput,
+  baseTam: number
+): Promise<GrowthProjection> {
+  const groq = getClient();
+  const prompt = `Estimate 10-year market growth CAGRs for the "${input.market}" market in ${input.geography}. Current (${input.year}) TAM ≈ ${fmt(baseTam)} INR.
+Return ONLY this JSON (no code fences):
+{ "cagr_bear": <number — pessimistic % annual growth>, "cagr_base": <number — realistic % annual growth>, "cagr_bull": <number — optimistic % annual growth> }`;
+
+  let cagrBear = 5, cagrBase = 12, cagrBull = 25;
+  try {
+    const res = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+    });
+    const raw = res.choices[0]?.message?.content ?? '{}';
+    const parsed = parseJsonSafe<{ cagr_bear: number; cagr_base: number; cagr_bull: number }>(raw);
+    if (parsed) {
+      cagrBear = Number(parsed.cagr_bear ?? 5);
+      cagrBase = Number(parsed.cagr_base ?? 12);
+      cagrBull = Number(parsed.cagr_bull ?? 25);
+    }
+  } catch { /* use defaults */ }
+
+  const years = Array.from({ length: 11 }, (_, i) => input.year + i);
+  return {
+    base_tam: baseTam,
+    start_year: input.year,
+    years,
+    bear:      years.map((_, i) => baseTam * Math.pow(1 + cagrBear / 100, i)),
+    base_vals: years.map((_, i) => baseTam * Math.pow(1 + cagrBase / 100, i)),
+    bull:      years.map((_, i) => baseTam * Math.pow(1 + cagrBull / 100, i)),
+    cagr_bear: cagrBear,
+    cagr_base: cagrBase,
+    cagr_bull: cagrBull,
+  };
+}
+
+// ─── Revenue Model Builder ────────────────────────────────────────────────────
+
+export async function generateRevenueModel(
+  input: MarketSizingInput,
+  tam: number,
+  modelType: RevenueModelType
+): Promise<RevenueProjection> {
+  const groq = getClient();
+  const modelDesc: Record<RevenueModelType, string> = {
+    saas:          'SaaS (recurring subscription revenue)',
+    transactional: 'Transactional (revenue per sale/unit)',
+    marketplace:   'Marketplace (take-rate on GMV)',
+    licensing:     'Licensing (IP/technology license fees)',
+  };
+  const prompt = `Model a startup entering the "${input.market}" market in ${input.geography}. TAM ≈ ${fmt(tam)} INR. Revenue model: ${modelDesc[modelType]}.
+Project 5-year P&L for a company capturing 0.5%–3% market share by year 5.
+Return ONLY this JSON (no code fences):
+{
+  "years": [
+    { "year": ${input.year},     "revenue": <number in INR>, "gross_profit": <number>, "ebitda": <number> },
+    { "year": ${input.year + 1}, "revenue": <number>,        "gross_profit": <number>, "ebitda": <number> },
+    { "year": ${input.year + 2}, "revenue": <number>,        "gross_profit": <number>, "ebitda": <number> },
+    { "year": ${input.year + 3}, "revenue": <number>,        "gross_profit": <number>, "ebitda": <number> },
+    { "year": ${input.year + 4}, "revenue": <number>,        "gross_profit": <number>, "ebitda": <number> }
+  ],
+  "key_assumptions": ["assumption 1", "assumption 2", "assumption 3"]
+}
+EBITDA may be negative in early years. All values in INR.`;
+
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: prompt }],
+    response_format: { type: 'json_object' },
+  });
+  const raw = res.choices[0]?.message?.content ?? '{}';
+  const parsed = parseJsonSafe<{ years: RevenueProjectionYear[]; key_assumptions: string[] }>(raw);
+  return {
+    model_type: modelType,
+    years: parsed?.years ?? [],
+    key_assumptions: parsed?.key_assumptions ?? [],
+  };
+}
+
+// ─── Investment Thesis Generator ──────────────────────────────────────────────
+
+export async function generateInvestmentThesis(
+  input: MarketSizingInput,
+  tam: number,
+  sam: number,
+  som: number
+): Promise<InvestmentThesis> {
+  const groq = getClient();
+  const prompt = `Write an investment memo for the "${input.market}" market in ${input.geography} (${input.year}).
+TAM: ${fmt(tam)} INR | SAM: ${fmt(sam)} INR | SOM: ${fmt(som)} INR
+Return ONLY this JSON (no code fences):
+{
+  "memo": "150–200 word investment memo covering market opportunity, competitive dynamics, growth drivers, and entry strategy. Written in authoritative analyst voice.",
+  "key_metrics": [
+    { "label": "TAM", "value": "${fmt(tam)}" },
+    { "label": "CAGR (est.)", "value": "X%" },
+    { "label": "Key risk", "value": "one phrase" }
+  ],
+  "risks": ["Risk 1 — one sentence", "Risk 2 — one sentence", "Risk 3 — one sentence"],
+  "verdict": "Attractive | Neutral | Unattractive"
+}`;
+
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: prompt }],
+    response_format: { type: 'json_object' },
+  });
+  const raw = res.choices[0]?.message?.content ?? '{}';
+  const parsed = parseJsonSafe<InvestmentThesis>(raw);
+  return parsed ?? { memo: '', key_metrics: [], risks: [], verdict: 'Neutral' };
+}
