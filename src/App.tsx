@@ -767,24 +767,21 @@ export default function App() {
     if (enriching || competitors.length === 0) return;
     setEnriching(true);
     const groqKey = process.env.NEXT_PUBLIC_GROQ_API_KEY ?? '';
-    const tavilyKey = process.env.NEXT_PUBLIC_TAVILY_API_KEY ?? '';
     for (const c of competitors) {
       // Yahoo Finance (public co.)
       try {
         const fin = await fetch(`/api/financials?name=${encodeURIComponent(c.name)}`).then(r => r.json());
         setEnrichedData(prev => ({ ...prev, [c.name]: { ...prev[c.name], financials: fin } }));
       } catch { /* ignore */ }
-      // CrunchBase via Tavily + Groq
-      if (tavilyKey) {
-        try {
-          const fund = await fetch('/api/funding', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ companyName: c.name, tavilyKey, groqKey }),
-          }).then(r => r.json());
-          setEnrichedData(prev => ({ ...prev, [c.name]: { ...prev[c.name], funding: fund } }));
-        } catch { /* ignore */ }
-      }
+      // CrunchBase via Tavily + Groq (Tavily key is server-side only)
+      try {
+        const fund = await fetch('/api/funding', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ companyName: c.name, groqKey }),
+        }).then(r => r.json());
+        setEnrichedData(prev => ({ ...prev, [c.name]: { ...prev[c.name], funding: fund } }));
+      } catch { /* ignore */ }
     }
     setEnriching(false);
   }

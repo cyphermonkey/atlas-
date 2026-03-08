@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
-  const { companyName, tavilyKey, groqKey } = await req.json();
+  const { companyName, groqKey } = await req.json();
+  const tavilyKey = process.env.TAVILY_API_KEY;
   if (!tavilyKey || !groqKey) return NextResponse.json({ source: 'not_found' });
 
   try {
