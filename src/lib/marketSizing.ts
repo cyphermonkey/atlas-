@@ -49,13 +49,8 @@ export interface SanityCheckResult {
 // ─── Internal client (lazy-init, key from env) ────────────────────────────────
 
 function getClient() {
-  const key = process.env.NEXT_PUBLIC_GROQ_API_KEY as string | undefined;
-  if (!key || key === 'your_groq_api_key_here') {
-    throw new Error(
-      'Groq API key not found. Add NEXT_PUBLIC_GROQ_API_KEY to your .env.local and restart the dev server.'
-    );
-  }
-  return new Groq({ apiKey: key, dangerouslyAllowBrowser: true });
+  // All requests proxy through /api/groq — key stays server-side only
+  return new Groq({ apiKey: 'proxy', baseURL: '/api/groq', dangerouslyAllowBrowser: true });
 }
 
 // ─── Deterministic calculation engine (zero LLM) ─────────────────────────────
