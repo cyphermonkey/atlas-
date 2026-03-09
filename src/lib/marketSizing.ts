@@ -140,7 +140,26 @@ async function webResearchMarket(
   input: MarketSizingInput,
   onChunk?: (msg: string) => void
 ): Promise<string> {
-  if (onChunk) onChunk('🔍 Searching live sources for market data...\n');
+  if (onChunk) onChunk('🔍 Fetching real market data...\n');
+
+  const parts: string[] = [];
+
+  // 1. World Bank macro data (free, authoritative)
+  try {
+    const wbRes = await fetch(`/api/worldbank?geography=${encodeURIComponent(input.geography)}&year=${input.year}`);
+    if (wbRes.ok) {
+      const wb = await wbRes.json();
+      if (wb.indicators?.length > 0) {
+        const lines = wb.indicators.map((ind: { label: string; value: number; unit: string }) =>
+          `  ${ind.label}: ${ind.value.toLocaleString()} ${ind.unit}`
+        ).join('\n');
+        parts.push(`WORLD BANK DATA — ${wb.country} (${wb.year}):\n${lines}\nSource: World Bank Open Data (data.worldbank.org)`);
+        if (onChunk) onChunk('✓ World Bank data loaded\n');
+      }
+    }
+  } catch { /* continue */ }
+
+  // 2. Tavily web search for industry-specific data
   try {
     const res = await fetch('/api/research', {
       method: 'POST',
@@ -153,14 +172,17 @@ async function webResearchMarket(
         ],
       }),
     });
-    if (!res.ok) return '';
-    const data = await res.json();
-    const results: string = data.results ?? '';
-    if (onChunk && results) onChunk('✓ Real data sourced from web\n');
-    return results;
-  } catch {
-    return '';
-  }
+    if (res.ok) {
+      const data = await res.json();
+      if (data.results) {
+        parts.push(data.results);
+        if (onChunk) onChunk('✓ Web sources searched\n');
+      }
+    }
+  } catch { /* continue */ }
+
+  if (onChunk && parts.length > 0) onChunk('📊 Generating assumptions from real data...\n');
+  return parts.join('\n\n---\n\n');
 }
 
 export async function generateMarketAssumptions(

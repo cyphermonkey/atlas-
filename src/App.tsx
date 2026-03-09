@@ -286,11 +286,30 @@ function AssumptionRow({ step, index, onChange, onBlur, warning }: {
           <div className="text-sm font-medium" style={{ color: 'var(--fg-1)' }}>
             {step.label}
           </div>
-          <div
-            className="text-xs mt-0.5"
-            style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-3)', fontSize: '0.65rem' }}
-          >
-            {step.source}
+          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+            {(() => {
+              const src = (step.source ?? '').toLowerCase();
+              const isWorldBank = src.includes('world bank') || src.includes('worldbank');
+              const isWeb = src.includes('statista') || src.includes('ibis') || src.includes('bloomberg') || src.includes('reuters') || src.includes('report') || src.includes('survey') || src.includes('idc') || src.includes('gartner') || src.includes('mordor') || src.includes('grand view');
+              const isLow = step.confidence === 'low';
+              const badgeColor = isWorldBank ? '#34D399' : isWeb ? '#60A5FA' : isLow ? '#F87171' : '#FBBF24';
+              const badgeLabel = isWorldBank ? 'LIVE' : isWeb ? 'WEB' : 'AI EST.';
+              const badgeBg = isWorldBank ? 'rgba(52,211,153,0.1)' : isWeb ? 'rgba(96,165,250,0.1)' : isLow ? 'rgba(248,113,113,0.1)' : 'rgba(251,191,36,0.1)';
+              return (
+                <span
+                  className="tag"
+                  style={{ color: badgeColor, background: badgeBg, border: `1px solid ${badgeColor}30`, fontSize: '0.55rem', padding: '1px 5px', letterSpacing: '0.06em' }}
+                >
+                  {badgeLabel}
+                </span>
+              );
+            })()}
+            <span
+              className="text-xs"
+              style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-3)', fontSize: '0.65rem' }}
+            >
+              {step.source}
+            </span>
           </div>
         </td>
 
@@ -1601,6 +1620,20 @@ Narrative: ${result.narrative}`;
                   >
                     Click value to edit · TAM recalculates instantly
                   </span>
+                </div>
+
+                {/* Data quality notice */}
+                <div className="px-5 py-2 flex items-center gap-4 flex-wrap" style={{ background: 'rgba(0,0,0,0.15)', borderBottom: '1px solid var(--border)' }}>
+                  {[
+                    { color: '#34D399', bg: 'rgba(52,211,153,0.1)', label: 'LIVE', desc: 'World Bank verified' },
+                    { color: '#60A5FA', bg: 'rgba(96,165,250,0.1)', label: 'WEB',  desc: 'Web-sourced estimate' },
+                    { color: '#FBBF24', bg: 'rgba(251,191,36,0.1)', label: 'AI EST.', desc: 'AI-generated estimate' },
+                  ].map(({ color, bg, label, desc }) => (
+                    <div key={label} className="flex items-center gap-1.5">
+                      <span className="tag" style={{ color, background: bg, border: `1px solid ${color}30`, fontSize: '0.55rem', padding: '1px 5px' }}>{label}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.62rem', color: 'var(--fg-4)' }}>{desc}</span>
+                    </div>
+                  ))}
                 </div>
 
                 <div className="overflow-x-auto">
