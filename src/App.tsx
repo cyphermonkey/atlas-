@@ -5,7 +5,7 @@ import {
   ChevronDown, CheckCircle2,
   TrendingUp, Globe, Calendar, Layers,
   Send, MessageSquare, Users, BarChart3,
-  FileDown, Target, ShieldCheck, PieChart, LineChart, DollarSign, FileText, Hexagon,
+  FileDown, Target, ShieldCheck, PieChart, LineChart, DollarSign, FileText, Hexagon, Briefcase,
 } from 'lucide-react';
 import {
   generateMarketAssumptions,
@@ -22,6 +22,8 @@ import {
   generateRevenueModel,
   generateInvestmentThesis,
   runIdeaAgent,
+  identifyAndFrameCase,
+  executeConsultingStep,
 } from './lib/marketSizing';
 import type { AgentUpdate } from './lib/marketSizing';
 import type {
@@ -41,6 +43,9 @@ import type {
   RevenueProjection,
   InvestmentThesis,
   PorterForce,
+  CaseType,
+  ConsultingStep,
+  CaseFramework,
 } from './lib/marketSizing';
 
 // ─── Count-up animation ───────────────────────────────────────────────────────
@@ -592,6 +597,121 @@ function RevenueBarChart({ data }: { data: RevenueProjection }) {
 
 // ─── Examples ─────────────────────────────────────────────────────────────────
 
+// ─── Consulting Case Solver constants ─────────────────────────────────────────
+
+const CASE_TYPE_COLORS: Record<CaseType, { text: string; bg: string; border: string }> = {
+  'market-entry':    { text: '#818CF8', bg: 'rgba(99,102,241,0.1)',  border: 'rgba(99,102,241,0.3)'  },
+  'growth-strategy': { text: '#34D399', bg: 'rgba(52,211,153,0.1)',  border: 'rgba(52,211,153,0.3)'  },
+  'ma':              { text: '#FBBF24', bg: 'rgba(251,191,36,0.1)',  border: 'rgba(251,191,36,0.3)'  },
+  'profitability':   { text: '#F87171', bg: 'rgba(248,113,113,0.1)', border: 'rgba(248,113,113,0.3)' },
+  'pricing':         { text: '#60A5FA', bg: 'rgba(59,130,246,0.1)',  border: 'rgba(59,130,246,0.3)'  },
+  'turnaround':      { text: '#FB923C', bg: 'rgba(251,146,60,0.1)',  border: 'rgba(251,146,60,0.3)'  },
+  'digital':         { text: '#C084FC', bg: 'rgba(192,132,252,0.1)', border: 'rgba(192,132,252,0.3)' },
+};
+
+const LINKED_TOOL_LABELS: Record<string, string> = {
+  'market-sizing': 'Market Sizing',
+  'competitors':   'Competitor Intelligence',
+  'porters':       "Porter's Five Forces",
+  'swot':          'SWOT Analysis',
+  'scenarios':     'Scenario Analysis',
+  'segmentation':  'Market Segmentation',
+  'growth':        'Growth Projector',
+  'revenue':       'Revenue Model',
+  'thesis':        'Investment Thesis',
+};
+
+// ─── Consulting Step Card ─────────────────────────────────────────────────────
+
+function ConsultingStepCard({
+  step,
+  caseType,
+}: {
+  step: ConsultingStep;
+  caseType: CaseType;
+}) {
+  const colors = CASE_TYPE_COLORS[caseType];
+
+  return (
+    <div
+      className="card overflow-hidden"
+      style={{
+        animation: `fadeUp 0.45s cubic-bezier(0.22,1,0.36,1) ${step.stepNumber * 80}ms both`,
+        borderTop: `2px solid ${colors.text}`,
+      }}
+    >
+      <div className="p-5">
+        {/* Header row */}
+        <div className="flex items-start gap-3 mb-3">
+          {/* Step number bubble */}
+          <div
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
+            style={{ background: colors.bg, border: `1px solid ${colors.border}`, color: colors.text, fontFamily: 'var(--font-mono)' }}
+          >
+            {step.stepNumber}
+          </div>
+          <div>
+            <div className="text-sm font-semibold mb-1" style={{ color: 'var(--fg-1)' }}>
+              {step.title}
+            </div>
+            <p className="text-xs" style={{ color: 'var(--fg-3)' }}>{step.objective}</p>
+          </div>
+        </div>
+
+        {/* Key questions */}
+        <div className="mb-3">
+          <div className="text-xs font-bold mb-1.5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-3)', letterSpacing: '0.08em' }}>
+            KEY QUESTIONS
+          </div>
+          <ul className="space-y-1">
+            {step.keyQuestions.map((q, i) => (
+              <li key={i} className="text-xs flex gap-2" style={{ color: 'var(--fg-2)' }}>
+                <span style={{ color: colors.text, flexShrink: 0 }}>›</span>{q}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* Approach block */}
+        <div
+          className="px-3 py-2.5 rounded-lg text-xs leading-relaxed"
+          style={{ background: 'var(--ink-3)', border: '1px solid var(--border)', color: 'var(--fg-3)' }}
+        >
+          {step.approach}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+const CACHE_PREFIX = 'atlas_v2_';
+const LAST_KEY = 'atlas_last_key';
+
+function cacheKey(input: MarketSizingInput) {
+  return CACHE_PREFIX + btoa(`${input.market}|${input.geography}|${input.year}|${input.methodology}`).replace(/=/g, '');
+}
+
+function saveToCache(input: MarketSizingInput, result: MarketSizingResult, competitors: Competitor[]) {
+  try {
+    const key = cacheKey(input);
+    localStorage.setItem(key, JSON.stringify({ input, result, competitors, savedAt: Date.now() }));
+    localStorage.setItem(LAST_KEY, key);
+  } catch { /* ignore quota errors */ }
+}
+
+function loadFromCache(input?: MarketSizingInput): { input: MarketSizingInput; result: MarketSizingResult; competitors: Competitor[] } | null {
+  try {
+    const key = input ? cacheKey(input) : localStorage.getItem(LAST_KEY);
+    if (!key) return null;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (Date.now() - parsed.savedAt > 7 * 86400000) return null; // 7 days
+    return parsed;
+  } catch { return null; }
+}
+
 const EXAMPLES: { market: string; geography: string; methodology: Methodology }[] = [
   { market: 'Indian EV market',       geography: 'India',         methodology: 'top-down'   },
   { market: 'US cloud security',      geography: 'United States', methodology: 'top-down'   },
@@ -666,6 +786,37 @@ export default function App() {
   const [cac, setCac] = useState(300);
   const [grossMarginPct, setGrossMarginPct] = useState(70);
 
+  // Case Solver state
+  const [caseMode, setCaseMode]           = useState(false);
+  const [caseInput, setCaseInput]         = useState('');
+  const [caseLoading, setCaseLoading]     = useState(false);
+  const [caseFramework, setCaseFramework] = useState<CaseFramework | null>(null);
+  const [caseSteps, setCaseSteps]         = useState<ConsultingStep[]>([]);
+  const [caseLogs, setCaseLogs]           = useState<string[]>([]);
+
+  // Section refs for Case Solver scroll-to
+  const scenariosSectionRef   = useRef<HTMLDivElement | null>(null);
+  const competitorsSectionRef = useRef<HTMLDivElement | null>(null);
+  const portersSectionRef     = useRef<HTMLDivElement | null>(null);
+  const swotSectionRef        = useRef<HTMLDivElement | null>(null);
+  const segmentsSectionRef    = useRef<HTMLDivElement | null>(null);
+  const growthSectionRef      = useRef<HTMLDivElement | null>(null);
+  const revenueSectionRef     = useRef<HTMLDivElement | null>(null);
+  const thesisSectionRef      = useRef<HTMLDivElement | null>(null);
+
+  // Load cached result on mount
+  useEffect(() => {
+    const cached = loadFromCache();
+    if (cached) {
+      setInput(cached.input);
+      setResult(cached.result);
+      setSteps(cached.result.steps);
+      setComputed({ tam: cached.result.tam, sam: cached.result.sam, som: cached.result.som });
+      if (cached.competitors?.length > 0) setCompetitors(cached.competitors);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Animated dots while loading
   useEffect(() => {
     if (!loading) return;
@@ -683,6 +834,14 @@ export default function App() {
 
   async function analyze() {
     if (!input.market.trim() || !input.geography.trim()) return;
+    // Return cached result for same input
+    const cached = loadFromCache(input);
+    if (cached) {
+      setResult(cached.result); setSteps(cached.result.steps);
+      setComputed({ tam: cached.result.tam, sam: cached.result.sam, som: cached.result.som });
+      if (cached.competitors?.length) setCompetitors(cached.competitors);
+      return;
+    }
     setLoading(true); setError(''); setResult(null);
     setSteps([]); setWarnings({}); setDots('');
     try {
@@ -690,6 +849,7 @@ export default function App() {
       setResult(res);
       setSteps(res.steps);
       setComputed({ tam: res.tam, sam: res.sam, som: res.som });
+      saveToCache(input, res, []);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Something went wrong. Try again.');
     } finally {
@@ -721,6 +881,8 @@ export default function App() {
     setPorters(null); setSwot(null); setSegments([]);
     setGrowth(null); setRevenueModel(null);
     setThesis(null);
+    setCaseFramework(null); setCaseSteps([]); setCaseLogs([]);
+    try { const k = localStorage.getItem(LAST_KEY); if (k) localStorage.removeItem(k); localStorage.removeItem(LAST_KEY); } catch { /* ignore */ }
   }
 
   async function runAgent() {
@@ -741,6 +903,7 @@ export default function App() {
       setSteps(agentResult.result.steps);
       setComputed({ tam: agentResult.result.tam, sam: agentResult.result.sam, som: agentResult.result.som });
       setCompetitors(agentResult.competitors);
+      saveToCache(agentResult.input, agentResult.result, agentResult.competitors);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Agent failed. Please try again.';
       setError(msg);
@@ -888,6 +1051,68 @@ Narrative: ${result.narrative}`;
     finally { setThesisLoading(false); }
   }
 
+  async function runCase() {
+    if (!caseInput.trim() || caseLoading) return;
+    setCaseLoading(true);
+    setCaseLogs([]);
+    setCaseFramework(null);
+    setCaseSteps([]);
+    try {
+      const framework = await identifyAndFrameCase(caseInput, (msg) => {
+        setCaseLogs(prev => [...prev, msg]);
+      });
+      setCaseFramework(framework);
+      setCaseSteps(framework.steps);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to analyze case. Please try again.';
+      setCaseLogs(prev => [...prev, `✗ ${msg}`]);
+    } finally {
+      setCaseLoading(false);
+    }
+  }
+
+  function goToTool(tool: string) {
+    const refMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
+      'scenarios':   scenariosSectionRef,
+      'competitors': competitorsSectionRef,
+      'porters':     portersSectionRef,
+      'swot':        swotSectionRef,
+      'segmentation': segmentsSectionRef,
+      'growth':      growthSectionRef,
+      'revenue':     revenueSectionRef,
+      'thesis':      thesisSectionRef,
+    };
+    if (tool === 'market-sizing') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    const ref = refMap[tool];
+    if (ref?.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  async function runCaseStep(stepId: string) {
+    if (!caseFramework) return;
+    const step = caseSteps.find(s => s.id === stepId);
+    if (!step) return;
+
+    setCaseSteps(prev => prev.map(s => s.id === stepId ? { ...s, status: 'running' } : s));
+
+    try {
+      if (step.linkedTool) {
+        goToTool(step.linkedTool);
+        setCaseSteps(prev => prev.map(s => s.id === stepId ? { ...s, status: 'done' } : s));
+      } else {
+        const ctx = `Case: ${caseFramework.caseTypeLabel}\nFramework: ${caseFramework.frameworkUsed}\nContext: ${caseFramework.clientContext}`;
+        const output = await executeConsultingStep(step, ctx);
+        setCaseSteps(prev => prev.map(s => s.id === stepId ? { ...s, status: 'done', output } : s));
+      }
+    } catch {
+      setCaseSteps(prev => prev.map(s => s.id === stepId ? { ...s, status: 'pending' } : s));
+    }
+  }
+
   function exportToPDF() {
     if (!result) return;
     const win = window.open('', '_blank');
@@ -940,7 +1165,7 @@ Narrative: ${result.narrative}`;
     setTimeout(() => win.print(), 400);
   }
 
-  const canRun = !!(input.market.trim() && input.geography.trim() && !loading);
+  const canRun = !!(input.market.trim() && input.geography.trim() && !loading && !caseLoading);
 
   return (
     <div className="min-h-screen">
@@ -990,31 +1215,51 @@ Narrative: ${result.narrative}`;
             <em style={{ fontStyle: 'italic', color: 'var(--indigo-hi)' }}>in seconds.</em>
           </h1>
           <p className="text-base mb-6" style={{ color: 'var(--fg-2)', maxWidth: 460, lineHeight: 1.7 }}>
-            {ideaMode
+            {caseMode
+              ? 'Describe your client\'s business problem — the AI identifies the case type, applies BCG/McKinsey frameworks, and builds a step-by-step work plan.'
+              : ideaMode
               ? 'Describe your startup — the AI figures out what to search, thinks through the market, and builds the full report.'
               : 'Enter your market details and the AI generates structured assumptions, runs the math, and sanity-checks every edit.'}
           </p>
 
           {/* Mode toggle */}
           <div className="flex items-center gap-2 mb-4">
-            {[
-              { id: false, label: 'Manual Form', icon: <Layers size={11} /> },
-              { id: true,  label: 'AI Agent — just describe your idea', icon: <Zap size={11} /> },
-            ].map(({ id, label, icon }) => (
-              <button
-                key={String(id)}
-                onClick={() => { setIdeaMode(id); setError(''); setAgentLogs([]); }}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5"
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  background: ideaMode === id ? 'var(--indigo-lo)' : 'transparent',
-                  border: `1px solid ${ideaMode === id ? 'var(--border-hi)' : 'var(--border)'}`,
-                  color: ideaMode === id ? 'var(--indigo-hi)' : 'var(--fg-3)',
-                }}
-              >
-                {icon}{label}
-              </button>
-            ))}
+            <button
+              onClick={() => { setIdeaMode(false); setCaseMode(false); setError(''); setAgentLogs([]); }}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5"
+              style={{
+                fontFamily: 'var(--font-mono)',
+                background: !ideaMode && !caseMode ? 'var(--indigo-lo)' : 'transparent',
+                border: `1px solid ${!ideaMode && !caseMode ? 'var(--border-hi)' : 'var(--border)'}`,
+                color: !ideaMode && !caseMode ? 'var(--indigo-hi)' : 'var(--fg-3)',
+              }}
+            >
+              <Layers size={11} />Manual Form
+            </button>
+            <button
+              onClick={() => { setIdeaMode(true); setCaseMode(false); setError(''); setAgentLogs([]); }}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5"
+              style={{
+                fontFamily: 'var(--font-mono)',
+                background: ideaMode && !caseMode ? 'var(--indigo-lo)' : 'transparent',
+                border: `1px solid ${ideaMode && !caseMode ? 'var(--border-hi)' : 'var(--border)'}`,
+                color: ideaMode && !caseMode ? 'var(--indigo-hi)' : 'var(--fg-3)',
+              }}
+            >
+              <Zap size={11} />AI Agent — just describe your idea
+            </button>
+            <button
+              onClick={() => { setCaseMode(true); setIdeaMode(false); setError(''); setAgentLogs([]); }}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5"
+              style={{
+                fontFamily: 'var(--font-mono)',
+                background: caseMode ? 'rgba(251,191,36,0.1)' : 'transparent',
+                border: `1px solid ${caseMode ? 'rgba(251,191,36,0.3)' : 'var(--border)'}`,
+                color: caseMode ? '#FBBF24' : 'var(--fg-3)',
+              }}
+            >
+              <Briefcase size={11} />Case Solver
+            </button>
           </div>
 
           {/* Form card */}
@@ -1023,12 +1268,73 @@ Narrative: ${result.narrative}`;
             <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', gap: 8 }}>
               <div className="w-2 h-2 rounded-full" style={{ background: 'var(--indigo)', boxShadow: '0 0 8px var(--indigo)', animation: 'pulse-glow 3s infinite' }} />
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.62rem', color: 'var(--fg-3)', letterSpacing: '0.1em' }}>
-                {ideaMode ? 'AI AGENT MODE — NATURAL LANGUAGE INPUT' : 'MANUAL MODE — STRUCTURED FORM INPUT'}
+                {caseMode ? 'CASE SOLVER — CONSULTING FRAMEWORK GENERATOR' : ideaMode ? 'AI AGENT MODE — NATURAL LANGUAGE INPUT' : 'MANUAL MODE — STRUCTURED FORM INPUT'}
               </span>
             </div>
           <div style={{ padding: '20px' }}>
 
-            {ideaMode ? (
+            {caseMode ? (
+              /* ── Case Solver mode ── */
+              <div className="flex flex-col gap-4">
+                <div>
+                  <label className="label mb-1.5 flex items-center gap-1.5">
+                    <Briefcase size={11} /> Describe your case or business problem
+                  </label>
+                  <textarea
+                    className="input-field"
+                    rows={4}
+                    placeholder={`e.g. "My client wants to enter the Indian EV market" or "Manufacturing company losing margin over 3 quarters" or "PE firm evaluating acquisition of a SaaS business"`}
+                    value={caseInput}
+                    onChange={e => setCaseInput(e.target.value)}
+                    style={{ resize: 'vertical', lineHeight: 1.6 }}
+                  />
+                  <p className="text-xs mt-1.5" style={{ color: 'var(--fg-4)', fontFamily: 'var(--font-mono)' }}>
+                    Supports: Market Entry · Growth Strategy · M&A · Profitability · Pricing · Turnaround · Digital
+                  </p>
+                </div>
+                <div className="flex items-center justify-end">
+                  <button
+                    onClick={runCase}
+                    disabled={!caseInput.trim() || caseLoading}
+                    className="btn-primary"
+                  >
+                    {caseLoading
+                      ? <><Loader2 size={14} className="animate-spin" /> Framing case…</>
+                      : <><Briefcase size={14} /> Solve Case</>}
+                  </button>
+                </div>
+
+                {/* Case solver terminal log */}
+                {caseLogs.length > 0 && (
+                  <div className="terminal">
+                    <div className="flex items-center gap-2 px-4 py-2.5" style={{ borderBottom: '1px solid rgba(251,191,36,0.12)', background: 'rgba(251,191,36,0.04)' }}>
+                      <div className="flex gap-1.5">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#F87171', opacity: 0.7 }} />
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#F59E0B', opacity: 0.7 }} />
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: '#10B981', opacity: 0.7 }} />
+                      </div>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', color: 'rgba(251,191,36,0.6)', letterSpacing: '0.1em', marginLeft: 6 }}>
+                        atlas-agent ~ case-solver
+                      </span>
+                    </div>
+                    <div className="p-4 flex flex-col gap-1">
+                      {caseLogs.map((log, i) => {
+                        const isLast = i === caseLogs.length - 1;
+                        const isDone = log.startsWith('✓');
+                        const isErr = log.startsWith('✗');
+                        const color = isDone ? '#10B981' : isErr ? '#F87171' : isLast && caseLoading ? '#F59E0B' : 'rgba(251,191,36,0.7)';
+                        return (
+                          <div key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color, fontWeight: isLast ? 600 : 400 }}>
+                            {log}
+                            {isLast && caseLoading && <span style={{ marginLeft: 2, animation: 'cursor-blink 0.9s step-end infinite' }}>▌</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : ideaMode ? (
               /* ── AI Agent mode ── */
               <div className="flex flex-col gap-4">
                 <div>
@@ -1377,7 +1683,7 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* ── Scenario Analysis ── */}
-            <div className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.1s both' }}>
+            <div ref={scenariosSectionRef} className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.1s both' }}>
               <div
                 className="px-5 py-3.5 flex items-center justify-between"
                 style={{ borderBottom: scenarios.length > 0 ? '1px solid var(--border)' : 'none' }}
@@ -1444,7 +1750,7 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* ── Competitor Benchmarking ── */}
-            <div className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.2s both' }}>
+            <div ref={competitorsSectionRef} className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.2s both' }}>
               <div
                 className="px-5 py-3.5 flex items-center justify-between"
                 style={{ borderBottom: competitors.length > 0 ? '1px solid var(--border)' : 'none' }}
@@ -1580,7 +1886,7 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* ── Porter's Five Forces ── */}
-            <div className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.25s both' }}>
+            <div ref={portersSectionRef} className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.25s both' }}>
               <div
                 className="px-5 py-3.5 flex items-center justify-between"
                 style={{ borderBottom: porters ? '1px solid var(--border)' : 'none' }}
@@ -1650,7 +1956,7 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* ── SWOT Analysis ── */}
-            <div className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.3s both' }}>
+            <div ref={swotSectionRef} className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.3s both' }}>
               <div
                 className="px-5 py-3.5 flex items-center justify-between"
                 style={{ borderBottom: swot ? '1px solid var(--border)' : 'none' }}
@@ -1702,7 +2008,7 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* ── Market Segmentation ── */}
-            <div className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.35s both' }}>
+            <div ref={segmentsSectionRef} className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.35s both' }}>
               <div
                 className="px-5 py-3.5 flex items-center justify-between"
                 style={{ borderBottom: segments.length > 0 ? '1px solid var(--border)' : 'none' }}
@@ -1760,7 +2066,7 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* ── Growth Rate Projector ── */}
-            <div className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.4s both' }}>
+            <div ref={growthSectionRef} className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.4s both' }}>
               <div
                 className="px-5 py-3.5 flex items-center justify-between"
                 style={{ borderBottom: growth ? '1px solid var(--border)' : 'none' }}
@@ -1810,7 +2116,7 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* ── Revenue Model Builder ── */}
-            <div className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.45s both' }}>
+            <div ref={revenueSectionRef} className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.45s both' }}>
               <div
                 className="px-5 py-3.5 flex items-center justify-between"
                 style={{ borderBottom: '1px solid var(--border)' }}
@@ -1957,7 +2263,7 @@ Narrative: ${result.narrative}`;
             </div>
 
             {/* ── Investment Thesis Generator ── */}
-            <div className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.55s both' }}>
+            <div ref={thesisSectionRef} className="card overflow-hidden mb-5" style={{ animation: 'fadeUp 0.5s ease-out 0.55s both' }}>
               <div
                 className="px-5 py-3.5 flex items-center justify-between"
                 style={{ borderBottom: thesis ? '1px solid var(--border)' : 'none' }}
@@ -2097,8 +2403,84 @@ Narrative: ${result.narrative}`;
           </div>
         )}
 
+        {/* ── Case Framework Output ── */}
+        {caseFramework && !caseLoading && (
+          <div style={{ animation: 'fadeUp 0.5s ease-out' }}>
+
+            {/* Header */}
+            <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+              <div>
+                {/* Case type badge */}
+                <div className="flex items-center gap-2 mb-1">
+                  <span
+                    className="px-3 py-1 rounded-full text-xs font-bold tracking-wider"
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      background: CASE_TYPE_COLORS[caseFramework.caseType].bg,
+                      border: `1px solid ${CASE_TYPE_COLORS[caseFramework.caseType].border}`,
+                      color: CASE_TYPE_COLORS[caseFramework.caseType].text,
+                    }}
+                  >
+                    {caseFramework.caseTypeLabel.toUpperCase()}
+                  </span>
+                  <span className="text-xs" style={{ color: 'var(--fg-4)', fontFamily: 'var(--font-mono)' }}>
+                    {caseFramework.frameworkUsed}
+                  </span>
+                </div>
+                <p className="text-sm" style={{ color: 'var(--fg-2)', maxWidth: 520 }}>
+                  {caseFramework.clientContext}
+                </p>
+              </div>
+              <button
+                onClick={() => { setCaseFramework(null); setCaseSteps([]); setCaseLogs([]); setCaseInput(''); }}
+                className="btn-ghost text-xs"
+              >
+                <RefreshCw size={12} /> New case
+              </button>
+            </div>
+
+            {/* Working hypotheses */}
+            <div
+              className="card p-5 mb-5"
+              style={{ borderLeft: `3px solid ${CASE_TYPE_COLORS[caseFramework.caseType].text}` }}
+            >
+              <div className="label mb-3" style={{ color: CASE_TYPE_COLORS[caseFramework.caseType].text }}>
+                Working Hypotheses
+              </div>
+              <ul className="space-y-2">
+                {caseFramework.hypotheses.map((h, i) => (
+                  <li key={i} className="flex gap-2.5 text-sm" style={{ color: 'var(--fg-2)' }}>
+                    <span
+                      className="w-5 h-5 rounded flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5"
+                      style={{
+                        background: CASE_TYPE_COLORS[caseFramework.caseType].bg,
+                        color: CASE_TYPE_COLORS[caseFramework.caseType].text,
+                        fontFamily: 'var(--font-mono)',
+                      }}
+                    >
+                      H{i + 1}
+                    </span>
+                    {h}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Steps */}
+            <div className="flex flex-col gap-4">
+              {caseSteps.map(step => (
+                <ConsultingStepCard
+                  key={step.id}
+                  step={step}
+                  caseType={caseFramework.caseType}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ── Empty state ── */}
-        {!result && !loading && !agentRunning && (
+        {!result && !loading && !agentRunning && !caseFramework && !caseLoading && (
           <div
             className="text-center max-w-lg mx-auto py-16"
             style={{ animation: 'fadeUp 0.5s ease-out 0.2s both' }}

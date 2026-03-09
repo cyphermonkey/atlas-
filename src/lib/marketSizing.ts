@@ -89,8 +89,11 @@ export function formatCurrency(value: number, currency = 'INR'): string {
 
 // ─── Prompts ──────────────────────────────────────────────────────────────────
 
-function assumptionPrompt(i: MarketSizingInput): string {
-  return `You are a McKinsey senior analyst. Size the "${i.market}" market in ${i.geography} for year ${i.year} using the ${i.methodology} approach.
+function assumptionPrompt(i: MarketSizingInput, researchData?: string): string {
+  const researchSection = researchData
+    ? `\n\nWEB RESEARCH DATA (use these real figures as primary sources — cite them in the "source" field):\n${researchData}\n\nIMPORTANT: Base your assumptions on this real data. Quote specific statistics where available. Mark confidence "low" only when the research lacks data for a step.`
+    : '';
+  return `You are a McKinsey senior analyst. Size the "${i.market}" market in ${i.geography} for year ${i.year} using the ${i.methodology} approach.${researchSection}
 
 Return ONLY a valid JSON object — no markdown fences, no extra text, no explanation.
 
@@ -138,11 +141,42 @@ Return ONLY this JSON object (no fences, no extra text):
 
 // ─── LLM: Assumption generation ───────────────────────────────────────────────
 
+async function webResearchMarket(
+  input: MarketSizingInput,
+  onChunk?: (msg: string) => void
+): Promise<string> {
+  if (onChunk) onChunk('🔍 Searching live sources for market data...\n');
+  try {
+    const res = await fetch('/api/research', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        queries: [
+          `${input.market} market size ${input.geography} ${input.year} statistics`,
+          `${input.market} market growth rate ${input.geography} industry report`,
+          `${input.market} total addressable market data`,
+        ],
+      }),
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    const results: string = data.results ?? '';
+    if (onChunk && results) onChunk('✓ Real data sourced from web\n');
+    return results;
+  } catch {
+    return '';
+  }
+}
+
 export async function generateMarketAssumptions(
   input: MarketSizingInput,
   onChunk?: (raw: string) => void
 ): Promise<MarketSizingResult> {
   const groq = getClient();
+
+  // Phase 1: web research for real sourced data
+  const researchData = await webResearchMarket(input, onChunk ? (msg) => onChunk(msg) : undefined);
+  if (onChunk && researchData) onChunk('📊 Generating assumptions from sourced data...\n');
 
   let raw = '';
 
@@ -151,7 +185,7 @@ export async function generateMarketAssumptions(
       role: 'system',
       content: 'You are a market sizing analyst. Always respond with a single valid JSON object matching the exact schema provided. No markdown, no extra keys, no nesting wrappers.',
     },
-    { role: 'user', content: assumptionPrompt(input) },
+    { role: 'user', content: assumptionPrompt(input, researchData || undefined) },
   ];
 
   if (onChunk) {
@@ -159,6 +193,7 @@ export async function generateMarketAssumptions(
       model: 'llama-3.3-70b-versatile',
       messages,
       response_format: { type: 'json_object' },
+      temperature: 0,
       stream: true,
     });
 
@@ -172,6 +207,7 @@ export async function generateMarketAssumptions(
       model: 'llama-3.3-70b-versatile',
       messages,
       response_format: { type: 'json_object' },
+      temperature: 0,
     });
     raw = result.choices[0]?.message?.content ?? '';
   }
@@ -255,6 +291,7 @@ export async function sanityCheckAssumption(
       model: 'llama-3.3-70b-versatile',
       messages: [{ role: 'user', content: sanityPrompt(label, oldValue, newValue, context) }],
       response_format: { type: 'json_object' },
+      temperature: 0,
     });
 
     const raw = result.choices[0]?.message?.content ?? '{}';
@@ -330,6 +367,7 @@ All monetary values in INR. Estimate revenues proportionally to market share.`;
       { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
 
   const raw = result.choices[0]?.message?.content ?? '{}';
@@ -392,6 +430,7 @@ All monetary values in INR.`;
       { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
 
   const raw = result.choices[0]?.message?.content ?? '{}';
@@ -420,6 +459,7 @@ export async function chatWithAnalyst(
       },
       ...messages,
     ],
+    temperature: 0,
     max_tokens: 600,
   });
 
@@ -535,6 +575,7 @@ Score 1-3=Low, 4-6=Medium, 7-10=High. Higher score = more intense force = worse 
     model: 'llama-3.3-70b-versatile',
     messages: [{ role: 'user', content: prompt }],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
   const raw = res.choices[0]?.message?.content ?? '{}';
   return parseJsonSafe<PortersFiveForcesResult>(raw);
@@ -561,6 +602,7 @@ Each item: 1 clear, specific, actionable sentence. 3–4 items per quadrant.`;
     model: 'llama-3.3-70b-versatile',
     messages: [{ role: 'user', content: prompt }],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
   const raw = res.choices[0]?.message?.content ?? '{}';
   return parseJsonSafe<SWOTResult>(raw);
@@ -585,6 +627,7 @@ Return ONLY this JSON (no code fences):
     model: 'llama-3.3-70b-versatile',
     messages: [{ role: 'user', content: prompt }],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
   const raw = res.choices[0]?.message?.content ?? '{}';
   const parsed = parseJsonSafe<{ segments: MarketSegment[] }>(raw);
@@ -608,6 +651,7 @@ Return ONLY this JSON (no code fences):
       model: 'llama-3.3-70b-versatile',
       messages: [{ role: 'user', content: prompt }],
       response_format: { type: 'json_object' },
+      temperature: 0,
     });
     const raw = res.choices[0]?.message?.content ?? '{}';
     const parsed = parseJsonSafe<{ cagr_bear: number; cagr_base: number; cagr_bull: number }>(raw);
@@ -665,6 +709,7 @@ EBITDA may be negative in early years. All values in INR.`;
     model: 'llama-3.3-70b-versatile',
     messages: [{ role: 'user', content: prompt }],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
   const raw = res.choices[0]?.message?.content ?? '{}';
   const parsed = parseJsonSafe<{ years: RevenueProjectionYear[]; key_assumptions: string[] }>(raw);
@@ -702,6 +747,7 @@ Return ONLY this JSON (no code fences):
     model: 'llama-3.3-70b-versatile',
     messages: [{ role: 'user', content: prompt }],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
   const raw = res.choices[0]?.message?.content ?? '{}';
   const parsed = parseJsonSafe<InvestmentThesis>(raw);
@@ -782,6 +828,7 @@ Return JSON:
 }`,
     }],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
 
   type ExtractedContext = {
@@ -859,6 +906,7 @@ Return JSON:
 All monetary values in INR. 6–10 steps. First step operation must be "start".`,
     }],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
 
   const sizingResult = parseJsonSafe<MarketSizingResult>(
@@ -894,6 +942,7 @@ Return JSON:
 Estimated revenue in INR. Use real companies from search results.`,
     }],
     response_format: { type: 'json_object' },
+    temperature: 0,
   });
 
   const compParsed = parseJsonSafe<{ competitors: Competitor[] }>(
@@ -912,4 +961,156 @@ Estimated revenue in INR. Use real companies from search results.`,
     result:      sizingResult,
     competitors: compParsed?.competitors ?? [],
   };
+}
+
+// ─── Consulting Case Solver ────────────────────────────────────────────────────
+
+export type CaseType =
+  'market-entry' | 'growth-strategy' | 'ma' | 'profitability' |
+  'pricing' | 'turnaround' | 'digital';
+
+export interface ConsultingStep {
+  id: string;
+  stepNumber: number;
+  title: string;
+  objective: string;
+  keyQuestions: string[];
+  approach: string;
+  linkedTool?: 'market-sizing' | 'competitors' | 'porters' | 'swot' |
+               'scenarios' | 'segmentation' | 'growth' | 'revenue' | 'thesis' | null;
+  status: 'pending' | 'running' | 'done';
+  output?: string;
+}
+
+export interface CaseFramework {
+  caseType: CaseType;
+  caseTypeLabel: string;
+  frameworkUsed: string;
+  clientContext: string;
+  hypotheses: string[];
+  steps: ConsultingStep[];
+}
+
+export async function identifyAndFrameCase(
+  description: string,
+  onUpdate?: (msg: string) => void
+): Promise<CaseFramework> {
+  const groq = getClient();
+  if (onUpdate) onUpdate('🔍 Identifying case type and framework...\n');
+
+  const prompt = `You are a McKinsey Partner. A client described their business problem:
+"${description}"
+
+Identify the consulting case type and apply the correct BCG/McKinsey/Bain framework:
+
+MARKET ENTRY → 5Cs framework (Company, Customers, Competitors, Collaborators, Context) + Porter's Five Forces
+GROWTH STRATEGY → BCG Three Horizons + Ansoff Matrix
+M&A → Strategic Fit + Synergy Waterfall framework
+PROFITABILITY → Profit Tree (Revenue: Volume × Price; Cost: Fixed + Variable)
+PRICING → Value-Based Pricing (Economic Value to Customer)
+TURNAROUND → Stabilize-Restructure-Grow framework
+DIGITAL → Digital Maturity Model (Initiate → Develop → Define → Manage → Optimize)
+
+Return ONLY valid JSON (no markdown fences, no extra text):
+{
+  "caseType": "market-entry | growth-strategy | ma | profitability | pricing | turnaround | digital",
+  "caseTypeLabel": "Human-readable label e.g. 'Market Entry'",
+  "frameworkUsed": "e.g. '5Cs + Porter's Five Forces'",
+  "clientContext": "2-3 sentence summary of the client's situation and what they need",
+  "hypotheses": [
+    "Hypothesis 1 — specific testable statement about this case",
+    "Hypothesis 2 — ...",
+    "Hypothesis 3 — ..."
+  ],
+  "steps": [
+    {
+      "id": "step_1",
+      "stepNumber": 1,
+      "title": "Step title",
+      "objective": "One sentence objective for this step",
+      "keyQuestions": [
+        "Key question 1",
+        "Key question 2",
+        "Key question 3"
+      ],
+      "approach": "2-3 sentence description of the analytical approach for this step",
+      "linkedTool": "market-sizing | competitors | porters | swot | scenarios | segmentation | growth | revenue | thesis | null"
+    }
+  ]
+}
+
+Generate 5-7 steps following the exact framework for the identified case type.
+For linkedTool: use "null" (as string) if no existing tool maps to this step. Available tools: market-sizing, competitors, porters, swot, scenarios, segmentation, growth, revenue, thesis.`;
+
+  if (onUpdate) onUpdate('⚙️ Generating MECE framework and work plan...\n');
+
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a McKinsey Partner structuring a consulting engagement. Return only valid JSON matching the exact schema. No markdown fences.',
+      },
+      { role: 'user', content: prompt },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0,
+  });
+
+  const raw = res.choices[0]?.message?.content ?? '{}';
+  const parsed = parseJsonSafe<CaseFramework>(raw);
+  if (!parsed) throw new Error('Failed to parse case framework. Please try again.');
+
+  // Normalize linkedTool: "null" string → null
+  if (parsed.steps) {
+    parsed.steps = parsed.steps.map((s) => ({
+      ...s,
+      linkedTool: (s.linkedTool as unknown as string) === 'null' ? null : s.linkedTool,
+      status: 'pending' as const,
+    }));
+  }
+
+  if (onUpdate) onUpdate('✓ Framework ready\n');
+  return parsed;
+}
+
+export async function executeConsultingStep(
+  step: ConsultingStep,
+  caseContext: string,
+): Promise<string> {
+  const groq = getClient();
+
+  const prompt = `You are a McKinsey senior consultant working on this case:
+${caseContext}
+
+Complete this analysis step:
+Step: ${step.title}
+Objective: ${step.objective}
+Approach: ${step.approach}
+
+Answer each key question with specific, data-driven insights:
+${step.keyQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}
+
+Provide:
+- Direct answers to each key question
+- Specific recommendations with supporting rationale
+- Key risks and mitigants
+- Recommended next actions
+
+Write 300-500 words in McKinsey analyst voice. Use markdown formatting (headers, bullets).`;
+
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a McKinsey senior consultant. Provide concise, structured, data-driven analysis.',
+      },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0,
+    max_tokens: 800,
+  });
+
+  return res.choices[0]?.message?.content ?? '';
 }
